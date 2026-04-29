@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6efe3;
+  --foreground: #1f140b;
+  --muted: #6f6050;
+  --card: rgba(255, 250, 244, 0.88);
+  --border: rgba(88, 61, 37, 0.14);
+  --accent: #eb5b2c;
+  --accent-strong: #a33312;
+  --accent-soft: #ffd9c8;
+  --teal: #0f766e;
+  --shadow: 0 24px 80px rgba(55, 31, 13, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 216, 195, 0.9), transparent 32%),
+    radial-gradient(circle at top right, rgba(215, 244, 236, 0.85), transparent 28%),
+    linear-gradient(180deg, #f9f3e8 0%, #f2eadb 100%);
+  color: var(--foreground);
+  font-family:
+    "Avenir Next",
+    "Segoe UI",
+    sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family:
+    "Iowan Old Style",
+    "Palatino Linotype",
+    serif;
+  letter-spacing: -0.03em;
+}
+
+::selection {
+  background: rgba(235, 91, 44, 0.22);
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  transition:
+    color 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.surface {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.field {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid rgba(88, 61, 37, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0.85rem 1rem;
+  color: var(--foreground);
+  outline: none;
+}
+
+.field:focus {
+  border-color: rgba(235, 91, 44, 0.8);
+  box-shadow: 0 0 0 4px rgba(235, 91, 44, 0.12);
+}
+
+.label {
+  margin-bottom: 0.55rem;
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
