@@ -78,8 +78,7 @@ export async function POST(request: Request) {
     estimated_time: result.estimated_time,
     schedule: {
       start_time: result.schedule.start_time,
-      end_time: result.schedule.end_time,
-      schedule_reason: result.schedule.schedule_reason
+      end_time: result.schedule.end_time
     }
   });
 }

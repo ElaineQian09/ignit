@@ -27,7 +27,14 @@ export interface SchedulerAgentOutput {
   schedule_reason: string;
 }
 
-function nextPreferredDayIndex(preferredDays: string[] | null | undefined, startDay: number) {
+export interface SchedulerAgentDependencies {
+  scheduleMicroActions: typeof scheduleMicroActions;
+}
+
+function nextPreferredDayIndex(
+  preferredDays: string[] | null | undefined,
+  startDay: number
+) {
   const names = [
     "Sunday",
     "Monday",
@@ -85,36 +92,44 @@ function buildFallbackSchedule(
   };
 }
 
-export async function schedulerAgent(
-  input: SchedulerAgentInput
-): Promise<SchedulerAgentOutput> {
-  const availableTimeToday =
-    input.availableTimeToday ??
-    input.userPreferences.preferred_session_minutes ??
-    input.userPreferences.max_daily_focus_minutes ??
-    Math.max(input.estimated_minutes, 5);
-  const blocks = scheduleMicroActions({
-    userPreferences: input.userPreferences,
-    taskDeadline: input.taskDeadline ?? null,
-    availableTimeToday: Math.max(availableTimeToday, input.estimated_minutes),
-    microActions: [
-      {
-        id: "generated-start-step",
-        action_text: input.micro_action,
-        estimated_minutes: input.estimated_minutes
-      }
-    ],
-    energyLevel: input.energyLevel,
-    workStyle: input.workStyle ?? null
-  });
-
-  if (blocks[0]) {
-    return {
-      start_time: blocks[0].start_time,
-      end_time: blocks[0].end_time,
-      schedule_reason: blocks[0].schedule_reason
-    };
+export function createSchedulerAgent(
+  dependencies: SchedulerAgentDependencies = {
+    scheduleMicroActions
   }
+) {
+  return async function schedulerAgent(
+    input: SchedulerAgentInput
+  ): Promise<SchedulerAgentOutput> {
+    const availableTimeToday =
+      input.availableTimeToday ??
+      input.userPreferences.preferred_session_minutes ??
+      input.userPreferences.max_daily_focus_minutes ??
+      Math.max(input.estimated_minutes, 5);
+    const blocks = dependencies.scheduleMicroActions({
+      userPreferences: input.userPreferences,
+      taskDeadline: input.taskDeadline ?? null,
+      availableTimeToday: Math.max(availableTimeToday, input.estimated_minutes),
+      microActions: [
+        {
+          id: "generated-start-step",
+          action_text: input.micro_action,
+          estimated_minutes: input.estimated_minutes
+        }
+      ],
+      energyLevel: input.energyLevel,
+      workStyle: input.workStyle ?? null
+    });
 
-  return buildFallbackSchedule(input.estimated_minutes, input.userPreferences);
+    if (blocks[0]) {
+      return {
+        start_time: blocks[0].start_time,
+        end_time: blocks[0].end_time,
+        schedule_reason: blocks[0].schedule_reason
+      };
+    }
+
+    return buildFallbackSchedule(input.estimated_minutes, input.userPreferences);
+  };
 }
+
+export const schedulerAgent = createSchedulerAgent();

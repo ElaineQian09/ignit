@@ -6,9 +6,52 @@ import { redirect } from "next/navigation";
 
 import { getSchedulePreferences, requireOnboardedUser } from "@/lib/auth";
 import { getBaseUrl } from "@/lib/env";
-import { generateMicroActions } from "@/lib/planner";
+import { generateMicroActionPlan } from "@/lib/orchestrator";
 import { splitToList } from "@/lib/utils";
 import { taskSchema } from "@/lib/validators";
+import type { UserSchedulePreferences, WorkStyle } from "@/types/domain";
+
+function buildPlanTaskPrompt(taskTitle: string, planTitle: string) {
+  const normalizedTask = taskTitle.trim();
+  const normalizedPlan = planTitle.trim();
+
+  if (!normalizedPlan || normalizedPlan === normalizedTask) {
+    return normalizedTask;
+  }
+
+  return `${normalizedTask}. Current plan focus: ${normalizedPlan}.`;
+}
+
+function getPlanningPreferences(
+  preferences: UserSchedulePreferences | null
+): Pick<
+  UserSchedulePreferences,
+  | "preferred_days"
+  | "preferred_start_time"
+  | "preferred_end_time"
+  | "max_daily_focus_minutes"
+  | "preferred_session_minutes"
+  | "break_minutes"
+  | "high_energy_periods"
+  | "low_energy_periods"
+> {
+  return {
+    preferred_days: preferences?.preferred_days ?? [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday"
+    ],
+    preferred_start_time: preferences?.preferred_start_time ?? "09:00",
+    preferred_end_time: preferences?.preferred_end_time ?? "17:00",
+    max_daily_focus_minutes: preferences?.max_daily_focus_minutes ?? 60,
+    preferred_session_minutes: preferences?.preferred_session_minutes ?? 25,
+    break_minutes: preferences?.break_minutes ?? 5,
+    high_energy_periods: preferences?.high_energy_periods ?? [],
+    low_energy_periods: preferences?.low_energy_periods ?? []
+  };
+}
 
 export async function createTask(formData: FormData) {
   const parsed = taskSchema.safeParse({
@@ -46,21 +89,9 @@ export async function createTask(formData: FormData) {
     redirect("/task/new?error=Selected%20goal%20was%20not%20found.");
   }
 
-  const { data: memoryData } = await supabase
-    .from("memory_chunks")
-    .select("content")
-    .eq("user_id", user.id)
-    .eq("source_type", "task_history")
-    .order("created_at", { ascending: false })
-    .limit(6);
-  const behaviorMemory = ((memoryData ?? []) as Array<{ content: string }>).map(
-    (item) => item.content
-  );
   const schedulePreferences = await getSchedulePreferences(user.id);
-  const preferredWorkWindow =
-    schedulePreferences?.preferred_start_time && schedulePreferences?.preferred_end_time
-      ? `${schedulePreferences.preferred_start_time}-${schedulePreferences.preferred_end_time}`
-      : null;
+  const planningPreferences = getPlanningPreferences(schedulePreferences);
+  const workStyle = (profile.work_style as WorkStyle | null | undefined) ?? null;
 
   const taskInsert = writable.from("tasks").insert({
     user_id: user.id,
@@ -123,30 +154,26 @@ export async function createTask(formData: FormData) {
       .sort((left, right) => left.sort_order - right.sort_order)
       .map(async (plan) => ({
         plan,
-        microActions: await generateMicroActions({
-          taskTitle: parsed.data.title,
-          planTitle: plan.title,
-          goalTitle: goal.title,
-          availableTime: parsed.data.availableTime,
+        microActionPlan: await generateMicroActionPlan({
+          userId: user.id,
+          task: buildPlanTaskPrompt(parsed.data.title, plan.title),
           energyLevel: parsed.data.energyLevel,
-          deadline: parsed.data.deadline || null,
-          behaviorMemory,
-          preferredWorkWindow,
-          profile
+          userPreferences: planningPreferences,
+          taskDeadline: parsed.data.deadline || null,
+          availableTimeToday: parsed.data.availableTime,
+          workStyle
         })
       }))
   );
 
   const microActionInsert = writable.from("micro_actions").insert(
-    generatedPlans.flatMap(({ plan, microActions }) =>
-      microActions.map((action) => ({
-        task_id: task.id,
-        plan_id: plan.id,
-        action_text: action.action_text,
-        estimated_minutes: action.estimated_minutes,
-        status: "pending" as const
-      }))
-    )
+    generatedPlans.map(({ plan, microActionPlan }) => ({
+      task_id: task.id,
+      plan_id: plan.id,
+      action_text: microActionPlan.micro_action,
+      estimated_minutes: microActionPlan.estimated_minutes,
+      status: "pending" as const
+    }))
   ) as {
     select: (
       columns: string

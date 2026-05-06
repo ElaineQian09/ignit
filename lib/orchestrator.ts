@@ -1,13 +1,20 @@
-import { memoryAgent, type MemoryAgentOutput } from "@/lib/agents/memoryAgent";
 import {
+  createMemoryAgent,
+  memoryAgent,
+  type MemoryAgentOutput
+} from "@/lib/agents/memoryAgent";
+import {
+  createMicroActionAgent,
   microActionAgent,
   type MicroActionAgentOutput
 } from "@/lib/agents/microActionAgent";
 import {
+  classifyResistanceType,
   resistanceAgent,
   type ResistanceAgentOutput
 } from "@/lib/agents/resistanceAgent";
 import {
+  createSchedulerAgent,
   schedulerAgent,
   type SchedulerAgentOutput
 } from "@/lib/agents/schedulerAgent";
@@ -40,39 +47,65 @@ export interface GenerateMicroActionOutput
   schedule: SchedulerAgentOutput;
 }
 
-export async function generateMicroActionPlan(
-  input: GenerateMicroActionInput
-): Promise<GenerateMicroActionOutput> {
-  const [memoryResult, resistanceResult] = await Promise.all([
-    memoryAgent({
-      userId: input.userId,
-      task: input.task
-    }),
-    resistanceAgent({
-      task: input.task
-    })
-  ]);
+export interface GenerateMicroActionPlanDependencies {
+  memoryAgent: typeof memoryAgent;
+  resistanceAgent: typeof resistanceAgent;
+  microActionAgent: typeof microActionAgent;
+  schedulerAgent: typeof schedulerAgent;
+}
 
-  const microAction = await microActionAgent({
-    task: input.task,
-    memories: memoryResult.memories,
-    resistance_type: resistanceResult.resistance_type
-  });
+export function createGenerateMicroActionPlan(
+  dependencies: GenerateMicroActionPlanDependencies = {
+    memoryAgent: createMemoryAgent(),
+    resistanceAgent,
+    microActionAgent: createMicroActionAgent(),
+    schedulerAgent: createSchedulerAgent()
+  }
+) {
+  return async function generateMicroActionPlan(
+    input: GenerateMicroActionInput
+  ): Promise<GenerateMicroActionOutput> {
+    const [memoryResult, resistanceResult] = await Promise.all([
+      dependencies.memoryAgent({
+        userId: input.userId,
+        task: input.task
+      }),
+      dependencies.resistanceAgent({
+        task: input.task
+      })
+    ]);
 
-  const schedule = await schedulerAgent({
-    micro_action: microAction.micro_action,
-    estimated_minutes: microAction.estimated_minutes,
-    userPreferences: input.userPreferences,
-    energyLevel: input.energyLevel,
-    taskDeadline: input.taskDeadline ?? null,
-    availableTimeToday: input.availableTimeToday,
-    workStyle: input.workStyle ?? null
-  });
+    const refinedResistance =
+      memoryResult.memories.length > 0
+        ? classifyResistanceType({
+            task: input.task,
+            memories: memoryResult.memories
+          })
+        : resistanceResult.resistance_type;
 
-  return {
-    ...memoryResult,
-    ...resistanceResult,
-    ...microAction,
-    schedule
+    const microAction = await dependencies.microActionAgent({
+      task: input.task,
+      memories: memoryResult.memories,
+      resistance_type: refinedResistance
+    });
+
+    const schedule = await dependencies.schedulerAgent({
+      micro_action: microAction.micro_action,
+      estimated_minutes: microAction.estimated_minutes,
+      userPreferences: input.userPreferences,
+      energyLevel: input.energyLevel,
+      taskDeadline: input.taskDeadline ?? null,
+      availableTimeToday: input.availableTimeToday,
+      workStyle: input.workStyle ?? null
+    });
+
+    return {
+      ...memoryResult,
+      resistance_type: refinedResistance,
+      ...microAction,
+      schedule
+    };
   };
 }
+
+export const generateMicroActionPlan = createGenerateMicroActionPlan();

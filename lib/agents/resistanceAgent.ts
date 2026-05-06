@@ -19,10 +19,10 @@ function hasAny(text: string, patterns: string[]) {
   return patterns.some((pattern) => text.includes(pattern));
 }
 
-export async function resistanceAgent({
+export function classifyResistanceType({
   task,
   memories = []
-}: ResistanceAgentInput): Promise<ResistanceAgentOutput> {
+}: ResistanceAgentInput): ResistanceType {
   const text = `${task} ${memories.join(" ")}`.toLowerCase();
 
   if (
@@ -36,7 +36,7 @@ export async function resistanceAgent({
       "energy crash"
     ])
   ) {
-    return { resistance_type: "fatigue" };
+    return "fatigue";
   }
 
   if (
@@ -50,7 +50,7 @@ export async function resistanceAgent({
       "pick one"
     ])
   ) {
-    return { resistance_type: "decision_overload" };
+    return "decision_overload";
   }
 
   if (
@@ -66,7 +66,7 @@ export async function resistanceAgent({
       "application"
     ])
   ) {
-    return { resistance_type: "fear_of_failure" };
+    return "fear_of_failure";
   }
 
   if (
@@ -81,7 +81,7 @@ export async function resistanceAgent({
       "algorithm"
     ])
   ) {
-    return { resistance_type: "fear_of_difficulty" };
+    return "fear_of_difficulty";
   }
 
   if (
@@ -98,8 +98,16 @@ export async function resistanceAgent({
     ]) ||
     task.trim().split(/\s+/).length >= 8
   ) {
-    return { resistance_type: "task_too_large" };
+    return "task_too_large";
   }
 
-  return { resistance_type: "unclear_start" };
+  return "unclear_start";
+}
+
+export async function resistanceAgent(
+  input: ResistanceAgentInput
+): Promise<ResistanceAgentOutput> {
+  return {
+    resistance_type: classifyResistanceType(input)
+  };
 }

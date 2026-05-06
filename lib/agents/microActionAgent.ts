@@ -20,6 +20,20 @@ export interface MicroActionAgentOutput {
   confidence: number;
 }
 
+interface ParsedMicroAction {
+  micro_action: string;
+  estimated_time: string;
+  why_this_step: string;
+  optional_next_step: string;
+  confidence: number;
+}
+
+export interface MicroActionAgentDependencies {
+  generateStructuredAction: (
+    input: MicroActionAgentInput
+  ) => Promise<ParsedMicroAction | null>;
+}
+
 const microActionSchema = z.object({
   micro_action: z.string().min(10).max(220),
   estimated_time: z.string().min(3).max(30),
@@ -52,7 +66,7 @@ function fallbackMicroAction(
         estimated_time: formatMinutes(2),
         estimated_minutes: 2,
         why_this_step: "It removes startup ambiguity and turns the task into a visible workspace.",
-        optional_next_step: "Write one sentence describing what “started” would look like here.",
+        optional_next_step: 'Write one sentence describing what "started" would look like here.',
         confidence: 0.74
       };
     case "fear_of_difficulty":
@@ -66,7 +80,7 @@ function fallbackMicroAction(
       };
     case "fear_of_failure":
       return {
-        micro_action: `Create a rough scratch version of the first part of "${task}" and label it “messy draft”.`,
+        micro_action: `Create a rough scratch version of the first part of "${task}" and label it "messy draft".`,
         estimated_time: formatMinutes(5),
         estimated_minutes: 5,
         why_this_step: "It separates starting from judging quality, which reduces performance pressure.",
@@ -127,55 +141,74 @@ Requirements:
 `.trim();
 }
 
-export async function microActionAgent(
+async function defaultGenerateStructuredAction(
   input: MicroActionAgentInput
-): Promise<MicroActionAgentOutput> {
+): Promise<ParsedMicroAction | null> {
   const { apiKey, model } = getOpenAIEnv();
 
   if (!apiKey) {
-    return fallbackMicroAction(input.task, input.resistance_type);
+    return null;
   }
 
-  try {
-    const client = new OpenAI({ apiKey });
-    const response = await client.responses.parse({
-      model,
-      input: [
-        {
-          role: "system",
-          content:
-            "You generate a single concrete start step for a stuck user. Keep it specific, tiny, and immediately actionable."
-        },
-        {
-          role: "user",
-          content: buildPrompt(input)
-        }
-      ],
-      text: {
-        format: zodTextFormat(microActionSchema, "micro_action")
+  const client = new OpenAI({ apiKey });
+  const response = await client.responses.parse({
+    model,
+    input: [
+      {
+        role: "system",
+        content:
+          "You generate a single concrete start step for a stuck user. Keep it specific, tiny, and immediately actionable."
+      },
+      {
+        role: "user",
+        content: buildPrompt(input)
       }
-    });
-    const parsed = response.output_parsed;
+    ],
+    text: {
+      format: zodTextFormat(microActionSchema, "micro_action")
+    }
+  });
 
-    if (!parsed) {
+  return response.output_parsed;
+}
+
+function normalizeStructuredAction(parsed: ParsedMicroAction) {
+  const estimatedMinutes = Math.max(
+    1,
+    Math.min(
+      5,
+      Number.parseInt(parsed.estimated_time.replace(/[^\d]/g, ""), 10) || 3
+    )
+  );
+
+  return {
+    ...parsed,
+    estimated_time: formatMinutes(estimatedMinutes),
+    estimated_minutes: estimatedMinutes
+  };
+}
+
+export function createMicroActionAgent(
+  dependencies: MicroActionAgentDependencies = {
+    generateStructuredAction: defaultGenerateStructuredAction
+  }
+) {
+  return async function microActionAgent(
+    input: MicroActionAgentInput
+  ): Promise<MicroActionAgentOutput> {
+    try {
+      const parsed = await dependencies.generateStructuredAction(input);
+
+      if (!parsed) {
+        return fallbackMicroAction(input.task, input.resistance_type);
+      }
+
+      return normalizeStructuredAction(parsed);
+    } catch (error) {
+      console.error("Micro-action agent failed:", error);
       return fallbackMicroAction(input.task, input.resistance_type);
     }
-
-    const estimatedMinutes = Math.max(
-      1,
-      Math.min(
-        5,
-        Number.parseInt(parsed.estimated_time.replace(/[^\d]/g, ""), 10) || 3
-      )
-    );
-
-    return {
-      ...parsed,
-      estimated_time: formatMinutes(estimatedMinutes),
-      estimated_minutes: estimatedMinutes
-    };
-  } catch (error) {
-    console.error("Micro-action agent failed:", error);
-    return fallbackMicroAction(input.task, input.resistance_type);
-  }
+  };
 }
+
+export const microActionAgent = createMicroActionAgent();

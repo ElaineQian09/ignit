@@ -172,15 +172,16 @@ export default async function TaskCreationPage({
             </div>
 
             <div className="surface rounded-[2rem] p-6">
-              <h2 className="text-xl font-semibold">RAG extension point</h2>
+              <h2 className="text-xl font-semibold">Parallel agent flow</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                This page already records task context into `memory_chunks`.
-                Later you can replace the deterministic planner with:
+                This task flow now uses the same modular agent pipeline as the
+                micro-action API:
               </p>
               <ul className="mt-4 space-y-2 text-sm leading-6 text-[var(--muted)]">
                 <li>Retrieve similar past stalls from embeddings.</li>
-                <li>Fetch prior successful start patterns.</li>
-                <li>Use calendar windows to place the smallest viable action.</li>
+                <li>Classify the likely source of resistance.</li>
+                <li>Generate one low-friction start step per plan.</li>
+                <li>Schedule the active plan when preferences are configured.</li>
               </ul>
             </div>
           </aside>
