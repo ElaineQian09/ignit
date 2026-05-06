@@ -86,20 +86,6 @@ export default async function OnboardingPage({
               </div>
 
               <div>
-                <label htmlFor="preferredWorkHours" className="label">
-                  Preferred work hours
-                </label>
-                <input
-                  id="preferredWorkHours"
-                  name="preferredWorkHours"
-                  defaultValue={profile?.preferred_work_hours ?? ""}
-                  placeholder="Mon-Thu, 8:30am-11:30am"
-                  className="field"
-                  required
-                />
-              </div>
-
-              <div>
                 <label htmlFor="workStyle" className="label">
                   Work style
                 </label>
@@ -157,6 +143,7 @@ export default async function OnboardingPage({
               <h2 className="text-xl font-semibold">What this enables</h2>
               <ul className="mt-4 space-y-3 text-sm leading-6 text-[var(--muted)]">
                 <li>Personalized first steps instead of generic task breakdowns.</li>
+                <li>Schedule data lives separately, so time windows can later sync from Google Calendar.</li>
                 <li>Future RAG retrieval from previous stalls, wins, and patterns.</li>
                 <li>A dashboard that shows what is safe to start today.</li>
               </ul>

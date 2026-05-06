@@ -39,8 +39,9 @@ export default async function TaskCreationPage({
           </Link>
           <h1 className="mt-4 text-4xl font-semibold">Create a new task</h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-            Focus on the task that feels heavy right now. Ignit will generate a
-            few safe starting actions instead of a full intimidating plan.
+            Make this a broad workstream if needed. Ignit will turn the first
+            session into small, safe starting actions instead of an overwhelming
+            master plan.
           </p>
         </div>
 
@@ -65,16 +66,37 @@ export default async function TaskCreationPage({
 
               <div>
                 <label htmlFor="title" className="label">
-                  Main task
+                  Big task or workstream
                 </label>
                 <textarea
                   id="title"
                   name="title"
                   rows={4}
-                  placeholder="Update my resume for the Atopia role"
+                  placeholder="Find a job\nPrepare behavior questions\nPrepare technical questions"
                   className="field resize-none"
                   required
                 />
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Broad tasks are fine here. Ignit uses the next field to decide
+                  how small the first session should be.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="planTitles" className="label">
+                  Plans under this task
+                </label>
+                <textarea
+                  id="planTitles"
+                  name="planTitles"
+                  rows={4}
+                  placeholder={"Prepare behavior questions\nPrepare technical questions\nUpdate resume"}
+                  className="field resize-none"
+                />
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Optional. Add one plan per line. The first one becomes the current
+                  focus plan, and the rest stay queued behind it.
+                </p>
               </div>
 
               <div className="grid gap-6 md:grid-cols-2">
@@ -87,7 +109,7 @@ export default async function TaskCreationPage({
 
                 <div>
                   <label htmlFor="availableTime" className="label">
-                    Available time
+                    Time for the first session
                   </label>
                   <select
                     id="availableTime"
@@ -102,6 +124,10 @@ export default async function TaskCreationPage({
                     <option value="45">45 minutes</option>
                     <option value="60">60 minutes</option>
                   </select>
+                  <p className="mt-2 text-sm text-[var(--muted)]">
+                    This is not the full task estimate. It is just the time you
+                    want Ignit to use for the first planning session.
+                  </p>
                 </div>
               </div>
 
@@ -139,9 +165,9 @@ export default async function TaskCreationPage({
             <div className="surface rounded-[2rem] p-6">
               <h2 className="text-xl font-semibold">How Ignit thinks</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                The planner does not optimize for finishing. It optimizes for
-                starting. The generated actions aim to be concrete, low-risk, and
-                short enough to begin even under cognitive overload.
+                The planner does not optimize for finishing the whole task. It
+                optimizes for making the next session small enough to start,
+                even when the task itself is still large.
               </p>
             </div>
 

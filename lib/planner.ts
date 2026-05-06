@@ -4,24 +4,91 @@ import { z } from "zod";
 
 import { getOpenAIEnv } from "@/lib/env";
 import { clamp } from "@/lib/utils";
-import type { EnergyLevel, Profile } from "@/types/domain";
+import type { EnergyLevel, Profile, WorkStyle } from "@/types/domain";
 
 interface PlannerInput {
   taskTitle: string;
+  planTitle?: string | null;
   goalTitle: string;
   availableTime: number;
   energyLevel: EnergyLevel;
   deadline?: string | null;
   behaviorMemory?: string[];
+  preferredWorkWindow?: string | null;
   profile: Pick<
     Profile,
-    "preferred_work_hours" | "work_style" | "common_avoidance_patterns"
+    "work_style" | "common_avoidance_patterns"
   >;
 }
 
 interface PlannerOutput {
   action_text: string;
   estimated_minutes: number;
+}
+
+function describeWorkStyle(workStyle: WorkStyle | null | undefined) {
+  switch (workStyle) {
+    case "Structured":
+      return "Use a clear sequence, explicit deliverables, and low ambiguity between steps.";
+    case "Flexible":
+      return "Offer room to choose an entry point and avoid overly rigid instructions.";
+    case "Sprint-based":
+      return "Favor short bursts, visible progress, and actions that fit inside a focused sprint.";
+    case "Needs external prompts":
+      return "Use strong external triggers like timers, reminders, or visible cues to help the user start.";
+    default:
+      return "Keep the steps concrete and easy to start.";
+  }
+}
+
+function availableSprintMinutes(startMinutes: number) {
+  if (startMinutes >= 15) {
+    return 15;
+  }
+
+  if (startMinutes >= 10) {
+    return 10;
+  }
+
+  return 8;
+}
+
+function getWorkStyleMinutes(
+  workStyle: WorkStyle | null | undefined,
+  startMinutes: number
+) {
+  switch (workStyle) {
+    case "Structured":
+      return {
+        prep: clamp(Math.min(startMinutes, 5), 2, 5),
+        action: clamp(startMinutes, 5, 20),
+        close: clamp(Math.min(startMinutes, 10), 5, 15)
+      };
+    case "Flexible":
+      return {
+        prep: clamp(Math.min(startMinutes, 4), 2, 4),
+        action: clamp(Math.max(6, startMinutes - 2), 5, 18),
+        close: clamp(Math.min(startMinutes, 8), 4, 12)
+      };
+    case "Sprint-based":
+      return {
+        prep: clamp(Math.min(startMinutes, 3), 2, 3),
+        action: clamp(Math.min(availableSprintMinutes(startMinutes), 20), 8, 20),
+        close: clamp(Math.min(startMinutes, 5), 3, 5)
+      };
+    case "Needs external prompts":
+      return {
+        prep: clamp(Math.min(startMinutes, 3), 2, 3),
+        action: clamp(Math.min(startMinutes, 8), 5, 10),
+        close: clamp(Math.min(startMinutes, 4), 2, 5)
+      };
+    default:
+      return {
+        prep: clamp(Math.round(startMinutes / 2), 2, 10),
+        action: startMinutes,
+        close: startMinutes
+      };
+  }
 }
 
 const microActionSchema = z.object({
@@ -66,11 +133,13 @@ Return structured JSON only.
 
 function buildUserPrompt({
   taskTitle,
+  planTitle,
   goalTitle,
   availableTime,
   energyLevel,
   deadline,
   behaviorMemory = [],
+  preferredWorkWindow,
   profile
 }: PlannerInput) {
   const avoidancePatterns =
@@ -81,17 +150,20 @@ function buildUserPrompt({
     behaviorMemory.length > 0
       ? `Recent work history:\n- ${behaviorMemory.join("\n- ")}`
       : "Recent work history: None yet";
+  const workStyleGuidance = describeWorkStyle(profile.work_style as WorkStyle | null);
 
   return `
 Generate 3 low-resistance micro-actions for this user.
 
 Goal: ${goalTitle}
 Task: ${taskTitle}
+Current plan: ${planTitle ?? taskTitle}
 Available time: ${availableTime} minutes
 Energy level: ${energyLevel}
 Deadline: ${deadline ?? "None"}
-Preferred work hours: ${profile.preferred_work_hours ?? "Unknown"}
+Preferred work window: ${preferredWorkWindow ?? "Unknown"}
 Work style: ${profile.work_style ?? "Unknown"}
+Work style guidance: ${workStyleGuidance}
 Common avoidance patterns: ${avoidancePatterns}
 ${memorySection}
 
@@ -104,6 +176,7 @@ Good output characteristics:
 - If the task is ambiguous, reduce ambiguity by naming a small visible deliverable.
 - If the task sounds emotionally loaded, make the first step safer and easier.
 - Keep the sequence coherent: step 1 should make step 2 easier, and step 2 should make step 3 easier.
+- Make the action shape match the user's work style instead of using one generic pattern.
 
 Bad output characteristics:
 - Reusing boilerplate phrases regardless of task.
@@ -114,40 +187,110 @@ Bad output characteristics:
 
 function deterministicFallback({
   taskTitle,
+  planTitle,
   availableTime,
   energyLevel,
   profile
 }: Pick<
   PlannerInput,
-  "taskTitle" | "availableTime" | "energyLevel" | "profile"
+  "taskTitle" | "planTitle" | "availableTime" | "energyLevel" | "profile"
 >): PlannerOutput[] {
+  const workingTitle = planTitle ?? taskTitle;
   const startMinutes = timerChunk(availableTime, energyLevel);
-  const prepMinutes = clamp(Math.round(startMinutes / 2), 2, 10);
+  const minutes = getWorkStyleMinutes(
+    profile.work_style as WorkStyle | null,
+    startMinutes
+  );
   const memoryNudge = profile.common_avoidance_patterns?.[0]
     ? ` Reduce friction from this pattern: ${profile.common_avoidance_patterns[0]}.`
     : "";
+  const workStyle = profile.work_style as WorkStyle | null;
 
-  const secondAction =
-    energyLevel === "low"
-      ? `Open the exact file, tab, or document needed for "${taskTitle}" and stop once it is visible.${memoryNudge}`
-      : energyLevel === "medium"
-        ? `List the first three visible sub-steps for "${taskTitle}" without trying to finish them.${memoryNudge}`
-        : `Do the easiest concrete slice of "${taskTitle}" for one short pass.${memoryNudge}`;
+  switch (workStyle) {
+    case "Structured":
+      return [
+        {
+          action_text: `Write a 3-step checklist for "${workingTitle}" and label step 1 as the smallest visible start.${memoryNudge}`,
+          estimated_minutes: minutes.prep
+        },
+        {
+          action_text: `Complete only step 1 of the checklist for "${workingTitle}" and stop when that exact sub-step is done.${memoryNudge}`,
+          estimated_minutes: minutes.action
+        },
+        {
+          action_text: `Record the next exact step for "${workingTitle}" in one sentence so the restart path stays clear.`,
+          estimated_minutes: minutes.close
+        }
+      ];
+    case "Flexible":
+      return [
+        {
+          action_text: `Open the main file, tab, or document for "${workingTitle}" and note two possible ways to begin.${memoryNudge}`,
+          estimated_minutes: minutes.prep
+        },
+        {
+          action_text: `Choose the easier of those two entry points and work on it for one short pass only.${memoryNudge}`,
+          estimated_minutes: minutes.action
+        },
+        {
+          action_text: `Leave a quick note about what feels most natural to continue next on "${workingTitle}".`,
+          estimated_minutes: minutes.close
+        }
+      ];
+    case "Sprint-based":
+      return [
+        {
+          action_text: `Pick one narrow target inside "${workingTitle}" that can move in a single sprint.${memoryNudge}`,
+          estimated_minutes: minutes.prep
+        },
+        {
+          action_text: `Set a ${minutes.action}-minute sprint and push only that narrow target until the timer ends.${memoryNudge}`,
+          estimated_minutes: minutes.action
+        },
+        {
+          action_text: `Capture the next sprint target for "${workingTitle}" before you step away.`,
+          estimated_minutes: minutes.close
+        }
+      ];
+    case "Needs external prompts":
+      return [
+        {
+          action_text: `Set a visible timer and place the exact file, tab, or tool for "${workingTitle}" on screen before doing anything else.${memoryNudge}`,
+          estimated_minutes: minutes.prep
+        },
+        {
+          action_text: `When the timer starts, do the easiest concrete slice of "${workingTitle}" until it rings.${memoryNudge}`,
+          estimated_minutes: minutes.action
+        },
+        {
+          action_text: `Create one external restart cue for later, like a calendar note or pinned reminder naming the next action.`,
+          estimated_minutes: minutes.close
+        }
+      ];
+    default: {
+      const secondAction =
+        energyLevel === "low"
+          ? `Open the exact file, tab, or document needed for "${workingTitle}" and stop once it is visible.${memoryNudge}`
+          : energyLevel === "medium"
+            ? `List the first three visible sub-steps for "${workingTitle}" without trying to finish them.${memoryNudge}`
+            : `Do the easiest concrete slice of "${workingTitle}" for one short pass.${memoryNudge}`;
 
-  return [
-    {
-      action_text: `Write one sentence that defines what "started" means for "${taskTitle}".`,
-      estimated_minutes: prepMinutes
-    },
-    {
-      action_text: secondAction,
-      estimated_minutes: startMinutes
-    },
-    {
-      action_text: `Set a ${startMinutes}-minute timer, work only until it ends, then decide whether to continue.`,
-      estimated_minutes: startMinutes
+      return [
+        {
+          action_text: `Write one sentence that defines what "started" means for "${workingTitle}".`,
+          estimated_minutes: minutes.prep
+        },
+        {
+          action_text: secondAction,
+          estimated_minutes: minutes.action
+        },
+        {
+          action_text: `Set a ${minutes.action}-minute timer, work only until it ends, then decide whether to continue.`,
+          estimated_minutes: minutes.close
+        }
+      ];
     }
-  ];
+  }
 }
 
 function normalizeActions(

@@ -49,6 +49,30 @@ export function formatDateTime(value: string | null) {
   }).format(date);
 }
 
+export function formatTime(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
+export function isSameLocalDay(left: string | Date, right: string | Date) {
+  const leftDate = left instanceof Date ? left : new Date(left);
+  const rightDate = right instanceof Date ? right : new Date(right);
+
+  return (
+    leftDate.getFullYear() === rightDate.getFullYear() &&
+    leftDate.getMonth() === rightDate.getMonth() &&
+    leftDate.getDate() === rightDate.getDate()
+  );
+}
+
 export function safeInternalPath(path: string | null) {
   if (!path || !path.startsWith("/")) {
     return "/dashboard";

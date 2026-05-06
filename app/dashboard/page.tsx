@@ -1,14 +1,15 @@
 import Link from "next/link";
 
 import { AppShell } from "@/components/app-shell";
-import { GoalList } from "@/components/dashboard/goal-list";
-import { MicroActionList } from "@/components/dashboard/micro-action-list";
+import { CompletionStatsCard } from "@/components/dashboard/completion-stats";
+import { ScheduleBlockList } from "@/components/dashboard/schedule-block-list";
 import { SectionCard } from "@/components/dashboard/section-card";
 import { TaskList } from "@/components/dashboard/task-list";
 import { FormNotice } from "@/components/forms/form-notice";
 import { getDashboardData } from "@/lib/data/dashboard";
 import { firstQueryValue } from "@/lib/utils";
 import { requireOnboardedUser } from "@/lib/auth";
+import type { UserSchedulePreferences } from "@/types/domain";
 
 import { signOut } from "./actions";
 
@@ -19,13 +20,25 @@ interface DashboardPageProps {
 export default async function DashboardPage({
   searchParams
 }: DashboardPageProps) {
-  const { user, profile } = await requireOnboardedUser();
-  const { activeGoals, activeTasks, todayMicroActions } = await getDashboardData(
-    user.id
-  );
+  const { supabase, user, profile } = await requireOnboardedUser();
+  const { activeGoals, activeTasks, todaySchedule, upcomingSchedule, completionStats } =
+    await getDashboardData(
+      user.id
+    );
   const params = await searchParams;
   const success = firstQueryValue(params.success);
   const error = firstQueryValue(params.error);
+  const { data: preferencesData } = await supabase
+    .from("user_schedule_preferences")
+    .select("*")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const preferences =
+    (preferencesData ?? null) as UserSchedulePreferences | null;
+  const focusWindow =
+    preferences?.preferred_start_time && preferences?.preferred_end_time
+      ? `${preferences.preferred_start_time}-${preferences.preferred_end_time}`
+      : "Not set";
 
   return (
     <AppShell>
@@ -40,7 +53,7 @@ export default async function DashboardPage({
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
               {profile.work_style} work style · Preferred focus window:{" "}
-              {profile.preferred_work_hours}
+              {focusWindow}
             </p>
           </div>
 
@@ -57,6 +70,12 @@ export default async function DashboardPage({
             >
               Edit profile
             </Link>
+            <Link
+              href="/settings/schedule"
+              className="inline-flex rounded-full border border-[var(--border)] bg-white px-5 py-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)]"
+            >
+              Schedule settings
+            </Link>
             <form action={signOut}>
               <button
                 type="submit"
@@ -71,58 +90,67 @@ export default async function DashboardPage({
         <FormNotice message={success} tone="success" />
         <FormNotice message={error} tone="error" />
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
           <div className="space-y-6">
             <SectionCard
-              title="Today's micro-actions"
-              description="These are intentionally tiny and safe to start."
+              title="Today's Plan"
+              description="Small, realistic blocks for today only."
             >
-              <MicroActionList
-                actions={todayMicroActions}
-                hasActiveTasks={activeTasks.length > 0}
+              <ScheduleBlockList
+                blocks={todaySchedule}
+                emptyTitle="No scheduled blocks for today."
+                emptyBody="Create a task or configure your schedule settings, and Ignit will build a calm plan here."
               />
             </SectionCard>
 
             <SectionCard
-              title="Active tasks"
-              description="The current task queue feeding your next actions."
+              title="Upcoming Blocks"
+              description="What is already queued after today."
             >
-              <TaskList
-                tasks={activeTasks}
-                hasActiveGoals={activeGoals.length > 0}
+              <ScheduleBlockList
+                blocks={upcomingSchedule}
+                emptyTitle="No upcoming blocks yet."
+                emptyBody="Future slots will appear here after Ignit spreads work across the next safe windows."
               />
             </SectionCard>
           </div>
 
           <div className="space-y-6">
             <SectionCard
-              title="Active goals"
-              description="Big goals stay visible, but your next move stays small."
+              title="Active tasks"
+              description="One focus task at a time, with the rest queued behind it."
             >
-              <GoalList goals={activeGoals} />
+              <TaskList
+                tasks={activeTasks}
+                hasActiveGoals={activeGoals.length > 0}
+              />
             </SectionCard>
 
             <SectionCard
-              title="Memory-ready profile"
-              description="The retrieval layer will use these preferences and patterns later."
+              title="Streak / Completed Micro-actions"
+              description="Progress without turning the app into pressure."
             >
-              <div className="space-y-4 text-sm text-[var(--muted)]">
+              <CompletionStatsCard stats={completionStats} />
+              <div className="mt-5 rounded-2xl border border-[var(--border)] bg-white/75 px-4 py-4 text-sm text-[var(--muted)]">
                 <p>
-                  <span className="font-semibold text-[var(--foreground)]">
-                    Avoidance patterns:
-                  </span>{" "}
+                  {profile.work_style} work style · Focus window: {focusWindow}
+                </p>
+                <p className="mt-2">
+                  Daily cap:{" "}
+                  {preferences?.max_daily_focus_minutes
+                    ? `${preferences.max_daily_focus_minutes} minutes`
+                    : "Not set"}
+                </p>
+                <p className="mt-2">
+                  Session / break:{" "}
+                  {preferences?.preferred_session_minutes &&
+                  preferences.break_minutes
+                    ? `${preferences.preferred_session_minutes} min focus / ${preferences.break_minutes} min break`
+                    : "Not set"}
+                </p>
+                <p className="mt-2">
+                  Avoidance patterns:{" "}
                   {profile.common_avoidance_patterns?.join(", ") ?? "None set"}
-                </p>
-                <p>
-                  <span className="font-semibold text-[var(--foreground)]">
-                    User:
-                  </span>{" "}
-                  {user.email}
-                </p>
-                <p>
-                  RAG note: `memory_chunks` is already in the schema, so you can
-                  begin storing reflections, past stalls, and successful starts
-                  without changing the dashboard contract.
                 </p>
               </div>
             </SectionCard>

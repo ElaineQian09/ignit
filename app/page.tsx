@@ -6,10 +6,9 @@ export default async function HomePage() {
   const { user } = await requireUser();
   const profile = await getProfile(user.id);
 
-  if (!profile?.preferred_work_hours || !profile.work_style) {
+  if (!profile?.work_style) {
     redirect("/onboarding");
   }
 
   redirect("/dashboard");
 }
-

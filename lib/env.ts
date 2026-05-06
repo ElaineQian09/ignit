@@ -37,6 +37,8 @@ export function getBaseUrl(origin?: string | null) {
 export function getOpenAIEnv() {
   return {
     apiKey: process.env.OPENAI_API_KEY,
-    model: process.env.OPENAI_MODEL?.trim() || "gpt-5.4-mini"
+    model: process.env.OPENAI_MODEL?.trim() || "gpt-5.4-mini",
+    embeddingModel:
+      process.env.OPENAI_EMBEDDING_MODEL?.trim() || "text-embedding-3-small"
   };
 }

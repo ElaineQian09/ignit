@@ -34,15 +34,14 @@ export async function GET(request: Request) {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("preferred_work_hours, work_style")
+    .select("work_style")
     .eq("user_id", user.id)
     .maybeSingle<Pick<
       Database["public"]["Tables"]["profiles"]["Row"],
-      "preferred_work_hours" | "work_style"
+      "work_style"
     >>();
 
-  const destination =
-    profile?.preferred_work_hours && profile.work_style ? next : "/onboarding";
+  const destination = profile?.work_style ? next : "/onboarding";
 
   return NextResponse.redirect(new URL(destination, request.url));
 }

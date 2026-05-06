@@ -10,7 +10,6 @@ import { onboardingSchema } from "@/lib/validators";
 export async function saveOnboarding(formData: FormData) {
   const parsed = onboardingSchema.safeParse({
     bigGoals: formData.get("bigGoals"),
-    preferredWorkHours: formData.get("preferredWorkHours"),
     workStyle: formData.get("workStyle"),
     commonAvoidancePatterns: formData.getAll("commonAvoidancePatterns")
   });
@@ -62,7 +61,6 @@ export async function saveOnboarding(formData: FormData) {
   const { error: profileError } = await writable.from("profiles").upsert(
     {
       user_id: user.id,
-      preferred_work_hours: parsed.data.preferredWorkHours,
       work_style: parsed.data.workStyle,
       common_avoidance_patterns: parsed.data.commonAvoidancePatterns
     },

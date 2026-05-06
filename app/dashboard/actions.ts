@@ -3,7 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { getSchedulePreferences } from "@/lib/auth";
+import {
+  buildBlockOutcomeMemories,
+  buildScheduleAttemptMemories
+} from "@/lib/scheduling-memory";
+import { insertMemoryLogs } from "@/lib/memory-logs";
 import { createClient } from "@/lib/supabase/server";
+import { scheduleMicroActions } from "@/lib/scheduler";
+import { taskAvailableTimeSchema } from "@/lib/validators";
+import type {
+  Profile,
+  TodayScheduledBlock,
+  UserSchedulePreferences,
+  WorkStyle
+} from "@/types/domain";
 
 type DashboardWriter = {
   from: (table: string) => {
@@ -19,6 +33,15 @@ type DashboardWriter = {
         ) => Promise<{ error: { message: string } | null }>;
       };
     };
+    select: (columns: string) => {
+      eq: (
+        column: string,
+        value: string
+      ) => Promise<{
+        data: Array<{ id: string }> | null;
+        error?: { message: string } | null;
+      }>;
+    };
   };
 };
 
@@ -27,12 +50,22 @@ type TaskRecord = {
   id: string;
   title: string;
   goal_id: string;
+  deadline?: string | null;
+  available_time_minutes: number | null;
   status: "active" | "done" | "archived";
   started_at: string | null;
   goals: { title: string } | null;
 };
+type PlanRecord = {
+  id: string;
+  task_id: string;
+  title: string;
+  status: "active" | "queued" | "done" | "archived";
+  sort_order: number;
+};
 type MicroActionRecord = {
   id: string;
+  plan_id: string;
   action_text: string;
   estimated_minutes?: number;
   status: "pending" | "done" | "skipped";
@@ -43,8 +76,43 @@ type MicroActionRecord = {
     title: string;
     goal_id: string;
     user_id: string;
+    deadline: string | null;
+    available_time_minutes: number | null;
     goals: { title: string } | null;
   };
+};
+type ScheduledBlockRecord = {
+  id: string;
+  user_id: string;
+  task_id: string | null;
+  micro_action_id: string | null;
+  start_time: string;
+  end_time: string;
+  status:
+    | "scheduled"
+    | "in_progress"
+    | "completed"
+    | "skipped"
+    | "rescheduled"
+    | "cancelled";
+  schedule_reason: string | null;
+  rescheduled_from_block_id: string | null;
+  tasks: {
+    id: string;
+    title: string;
+    deadline: string | null;
+    available_time_minutes: number | null;
+    user_id: string;
+    goal_id: string;
+    goals: { title: string } | null;
+  } | null;
+  micro_actions: {
+    id: string;
+    plan_id: string;
+    action_text: string;
+    estimated_minutes: number;
+    status: "pending" | "done" | "skipped";
+  } | null;
 };
 
 function dashboardRedirect(message: string, tone: "success" | "error"): never {
@@ -89,10 +157,540 @@ async function insertTaskHistoryMemory(
   });
 }
 
+async function insertBehaviorMemoryLogs(
+  writable: DashboardWriter,
+  userId: string,
+  entries: Array<{
+    event_type:
+      | "schedule_success"
+      | "schedule_failure"
+      | "block_completed"
+      | "block_skipped"
+      | "block_rescheduled"
+      | "block_need_more_time";
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }>
+) {
+  if (entries.length === 0) {
+    return;
+  }
+
+  await insertMemoryLogs(
+    writable,
+    entries.map((entry) => ({
+      user_id: userId,
+      event_type: entry.event_type,
+      summary: entry.summary,
+      metadata: entry.metadata ?? null
+    }))
+  );
+}
+
+function getBlockDurationMinutes(block: Pick<ScheduledBlockRecord, "start_time" | "end_time">) {
+  return Math.max(
+    5,
+    Math.round(
+      (new Date(block.end_time).getTime() - new Date(block.start_time).getTime()) / 60000
+    )
+  );
+}
+
+function toTodayScheduledBlock(block: ScheduledBlockRecord): TodayScheduledBlock {
+  return {
+    id: block.id,
+    user_id: block.user_id,
+    task_id: block.task_id,
+    micro_action_id: block.micro_action_id,
+    start_time: block.start_time,
+    end_time: block.end_time,
+    status: block.status,
+    schedule_reason: block.schedule_reason,
+    rescheduled_from_block_id: block.rescheduled_from_block_id,
+    created_at: "",
+    updated_at: "",
+    task_title: block.tasks?.title ?? null,
+    goal_title: block.tasks?.goals?.title ?? null,
+    action_text: block.micro_actions?.action_text ?? null,
+    estimated_minutes: block.micro_actions?.estimated_minutes ?? null,
+    micro_action_status: block.micro_actions?.status ?? null
+  };
+}
+
+async function getWorkStyleForUser(supabase: Awaited<ReturnType<typeof createClient>>, userId: string) {
+  const { data } = await supabase
+    .from("profiles")
+    .select("work_style")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  return ((data as Pick<Profile, "work_style"> | null)?.work_style as
+    | WorkStyle
+    | null
+    | undefined) ?? null;
+}
+
+async function schedulePlanMicroActions({
+  supabase,
+  writable,
+  userId,
+  task,
+  plan,
+  preferences,
+  workStyle,
+  searchStartTime
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  writable: DashboardWriter;
+  userId: string;
+  task: Pick<TaskRecord, "id" | "title" | "deadline" | "available_time_minutes">;
+  plan: Pick<PlanRecord, "id" | "title">;
+  preferences: UserSchedulePreferences | null;
+  workStyle: WorkStyle | null;
+  searchStartTime?: string;
+}) {
+  if (!preferences) {
+    return { status: "missing_preferences" as const, scheduledCount: 0 };
+  }
+
+  const { data: microActionData } = await supabase
+    .from("micro_actions")
+    .select("id, action_text, estimated_minutes")
+    .eq("plan_id", plan.id)
+    .eq("status", "pending")
+    .order("created_at", { ascending: true });
+  const microActions =
+    (microActionData ?? []) as Array<{
+      id: string;
+      action_text: string;
+      estimated_minutes: number;
+    }>;
+
+  if (microActions.length === 0) {
+    return { status: "empty" as const, scheduledCount: 0 };
+  }
+
+  const { data: existingBlockData } = await supabase
+    .from("scheduled_blocks")
+    .select("start_time, end_time, status")
+    .eq("user_id", userId)
+    .in("status", ["scheduled", "in_progress"]);
+  const existingBlocks =
+    (existingBlockData ?? []) as Array<{
+      start_time: string;
+      end_time: string;
+      status: string | null;
+    }>;
+
+  const scheduled = scheduleMicroActions({
+    userPreferences: preferences,
+    taskDeadline: task.deadline ?? null,
+    availableTimeToday:
+      task.available_time_minutes ??
+      preferences.preferred_session_minutes ??
+      preferences.max_daily_focus_minutes ??
+      15,
+    microActions,
+    energyLevel: "medium",
+    workStyle,
+    existingBlocks,
+    searchStartTime: searchStartTime ?? new Date().toISOString()
+  });
+
+  await insertBehaviorMemoryLogs(
+    writable,
+    userId,
+    buildScheduleAttemptMemories({
+      scheduledBlocks: scheduled,
+      microActions,
+      availableTimeToday:
+        task.available_time_minutes ??
+        preferences.preferred_session_minutes ??
+        preferences.max_daily_focus_minutes ??
+        15,
+      energyLevel: "medium",
+      workStyle
+    })
+  );
+
+  if (scheduled.length === 0) {
+    return { status: "no_safe_slot" as const, scheduledCount: 0 };
+  }
+
+  const { error } = await writable.from("scheduled_blocks").insert(
+    scheduled.map((block) => ({
+      user_id: userId,
+      task_id: task.id,
+      micro_action_id: block.micro_action_id,
+      start_time: block.start_time,
+      end_time: block.end_time,
+      status: "scheduled" as const,
+      schedule_reason: block.schedule_reason,
+      rescheduled_from_block_id: null
+    }))
+  );
+
+  if (error) {
+    await insertBehaviorMemoryLogs(writable, userId, [
+      {
+        event_type: "schedule_failure",
+        summary: `Plan "${plan.title}" could not be scheduled after activation.`,
+        metadata: {
+          task_id: task.id,
+          plan_id: plan.id,
+          reason: error.message
+        }
+      }
+    ]);
+    return { status: "save_failed" as const, scheduledCount: 0 };
+  }
+
+  return { status: "scheduled" as const, scheduledCount: scheduled.length };
+}
+
+async function advanceTaskPlanProgress({
+  supabase,
+  writable,
+  userId,
+  task,
+  planId,
+  completedAt,
+  startedAt
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  writable: DashboardWriter;
+  userId: string;
+  task: TaskRecord;
+  planId: string;
+  completedAt: string;
+  startedAt: string;
+}) {
+  const { data: currentPlanData } = await supabase
+    .from("plans")
+    .select("id, task_id, title, status, sort_order")
+    .eq("id", planId)
+    .eq("task_id", task.id)
+    .maybeSingle();
+  const currentPlan = (currentPlanData ?? null) as PlanRecord | null;
+
+  if (!currentPlan) {
+    return { taskCompleted: false };
+  }
+
+  const { data: remainingPlanActions } = await supabase
+    .from("micro_actions")
+    .select("id")
+    .eq("plan_id", planId)
+    .eq("status", "pending");
+  const planFinished = (remainingPlanActions ?? []).length === 0;
+
+  if (planFinished && currentPlan.status !== "done") {
+    await writable
+      .from("plans")
+      .update({ status: "done" })
+      .eq("id", currentPlan.id)
+      .eq("task_id", task.id);
+
+    await insertTaskHistoryMemory(
+      writable,
+      userId,
+      `Plan completed: ${currentPlan.title}. Task: ${task.title}.`,
+      {
+        event_type: "plan_completed",
+        plan_id: currentPlan.id,
+        task_id: task.id,
+        plan_title: currentPlan.title,
+        task_title: task.title,
+        completed_at: completedAt
+      }
+    );
+
+    const { data: nextPlanData } = await supabase
+      .from("plans")
+      .select("id, task_id, title, status, sort_order")
+      .eq("task_id", task.id)
+      .eq("status", "queued")
+      .order("sort_order", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const nextPlan = (nextPlanData ?? null) as PlanRecord | null;
+
+    if (nextPlan) {
+      await writable
+        .from("plans")
+        .update({ status: "active" })
+        .eq("id", nextPlan.id)
+        .eq("task_id", task.id);
+
+      await insertTaskHistoryMemory(
+        writable,
+        userId,
+        `Plan activated: ${nextPlan.title}. Task: ${task.title}.`,
+        {
+          event_type: "plan_activated",
+          plan_id: nextPlan.id,
+          task_id: task.id,
+          plan_title: nextPlan.title,
+          task_title: task.title,
+          activated_at: completedAt
+        }
+      );
+
+      const preferences = await getSchedulePreferences(userId);
+      const workStyle = await getWorkStyleForUser(supabase, userId);
+      const scheduleResult = await schedulePlanMicroActions({
+        supabase,
+        writable,
+        userId,
+        task,
+        plan: nextPlan,
+        preferences,
+        workStyle,
+        searchStartTime: completedAt
+      });
+
+      if (scheduleResult.status === "scheduled") {
+        await insertTaskHistoryMemory(
+          writable,
+          userId,
+          `Plan scheduled: ${nextPlan.title}. Task: ${task.title}. ${scheduleResult.scheduledCount} block(s) created.`,
+          {
+            event_type: "plan_scheduled",
+            plan_id: nextPlan.id,
+            task_id: task.id,
+            scheduled_count: scheduleResult.scheduledCount
+          }
+        );
+      }
+    }
+  }
+
+  const { data: remainingTaskActions } = await supabase
+    .from("micro_actions")
+    .select("id")
+    .eq("task_id", task.id)
+    .eq("status", "pending");
+  const taskCompleted = (remainingTaskActions ?? []).length === 0;
+
+  if (taskCompleted) {
+    await writable
+      .from("tasks")
+      .update({
+        status: "done",
+        completed_at: completedAt,
+        started_at: startedAt
+      })
+      .eq("id", task.id)
+      .eq("user_id", userId);
+
+    await insertTaskHistoryMemory(
+      writable,
+      userId,
+      `Task completed through plan progress: ${task.title}. Goal: ${task.goals?.title ?? "Unknown"}. Completed at ${completedAt}.`,
+      {
+        event_type: "task_completed",
+        task_id: task.id,
+        goal_id: task.goal_id,
+        completed_at: completedAt,
+        task_title: task.title,
+        goal_title: task.goals?.title ?? null,
+        completion_source: "all_plans_done"
+      }
+    );
+  }
+
+  return { taskCompleted };
+}
+
+async function rescheduleScheduledBlockInternal({
+  supabase,
+  writable,
+  userId,
+  block,
+  preferences,
+  workStyle,
+  eventType,
+  nextStatus
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  writable: DashboardWriter;
+  userId: string;
+  block: ScheduledBlockRecord;
+  preferences: UserSchedulePreferences;
+  workStyle: WorkStyle | null;
+  eventType: "block_skipped" | "block_need_more_time" | "block_rescheduled";
+  nextStatus: "skipped" | "rescheduled";
+}) {
+  if (!block.micro_actions || !block.tasks || !block.micro_action_id) {
+    dashboardRedirect("Scheduled block is missing its task context.", "error");
+  }
+
+  const { data: futureBlocksData } = await supabase
+    .from("scheduled_blocks")
+    .select("start_time, end_time, status")
+    .eq("user_id", userId)
+    .gte("end_time", new Date(block.end_time).toISOString());
+  const futureBlocks =
+    ((futureBlocksData ?? []) as Array<{
+      start_time: string;
+      end_time: string;
+      status: string;
+    }>).filter(
+      (futureBlock) =>
+        futureBlock.status === "scheduled" || futureBlock.status === "in_progress"
+    );
+  const originalMinutes = getBlockDurationMinutes(block);
+  const rescheduleMinutes =
+    eventType === "block_need_more_time"
+      ? Math.min(
+          Math.max(10, Math.round(originalMinutes * 0.75)),
+          preferences.preferred_session_minutes ?? originalMinutes
+        )
+      : Math.min(
+          originalMinutes,
+          preferences.preferred_session_minutes ?? originalMinutes,
+          15
+        );
+  const scheduled = scheduleMicroActions({
+    userPreferences: preferences,
+    taskDeadline: block.tasks.deadline,
+    availableTimeToday:
+      block.tasks.available_time_minutes ??
+      preferences.preferred_session_minutes ??
+      preferences.max_daily_focus_minutes ??
+      rescheduleMinutes,
+    microActions: [
+      {
+        id: block.micro_actions.id,
+        action_text: block.micro_actions.action_text,
+        estimated_minutes: rescheduleMinutes
+      }
+    ],
+    energyLevel:
+      eventType === "block_skipped" && new Date(block.start_time).getHours() >= 22
+        ? "low"
+        : "medium",
+    workStyle,
+    existingBlocks: futureBlocks,
+    searchStartTime: block.end_time
+  });
+
+  if (scheduled.length === 0) {
+    await insertBehaviorMemoryLogs(writable, userId, [
+      {
+        event_type: "schedule_failure",
+        summary:
+          "User needed a reschedule, but there was no safe next slot within current capacity.",
+        metadata: {
+          block_id: block.id,
+          task_id: block.task_id,
+          micro_action_id: block.micro_action_id,
+          event_type: eventType
+        }
+      }
+    ]);
+    dashboardRedirect("No safe follow-up slot was available.", "error");
+  }
+
+  const nextBlock = scheduled[0];
+
+  const { error: updateError } = await writable
+    .from("scheduled_blocks")
+    .update({
+      status: nextStatus
+    })
+    .eq("id", block.id)
+    .eq("user_id", userId);
+
+  if (updateError) {
+    dashboardRedirect("Unable to update the current block.", "error");
+  }
+
+  const { error: insertError } = await writable.from("scheduled_blocks").insert({
+    user_id: userId,
+    task_id: block.task_id,
+    micro_action_id: block.micro_action_id,
+    start_time: nextBlock.start_time,
+    end_time: nextBlock.end_time,
+    status: "scheduled",
+    schedule_reason: nextBlock.schedule_reason,
+    rescheduled_from_block_id: block.id
+  });
+
+  if (insertError) {
+    dashboardRedirect("Unable to create the rescheduled block.", "error");
+  }
+
+  await insertBehaviorMemoryLogs(
+    writable,
+    userId,
+    buildBlockOutcomeMemories({
+      eventType,
+      block: toTodayScheduledBlock(block),
+      taskTitle: block.tasks.title,
+      actionText: block.micro_actions.action_text,
+      workStyle
+    })
+  );
+
+  return nextBlock;
+}
+
 export async function signOut() {
   const supabase = await createClient();
   await supabase.auth.signOut();
   redirect("/login");
+}
+
+export async function updateTaskAvailableTime(formData: FormData) {
+  const parsed = taskAvailableTimeSchema.safeParse({
+    taskId: formData.get("taskId"),
+    availableTime: formData.get("availableTime")
+  });
+
+  if (!parsed.success) {
+    dashboardRedirect("Invalid session time.", "error");
+  }
+
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+
+  const { data } = await supabase
+    .from("tasks")
+    .select("id, title, goal_id, available_time_minutes, status, started_at, goals(title)")
+    .eq("id", parsed.data.taskId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const taskRow = (data ?? null) as TaskRecord | null;
+
+  if (!taskRow) {
+    dashboardRedirect("Task not found.", "error");
+  }
+
+  const { error } = await writable
+    .from("tasks")
+    .update({ available_time_minutes: parsed.data.availableTime })
+    .eq("id", taskRow.id)
+    .eq("user_id", user.id);
+
+  if (error) {
+    dashboardRedirect("Unable to update task session time.", "error");
+  }
+
+  await insertTaskHistoryMemory(
+    writable,
+    user.id,
+    `Task session time updated: ${taskRow.title}. New available time: ${parsed.data.availableTime} minutes.`,
+    {
+      event_type: "task_session_time_updated",
+      task_id: taskRow.id,
+      goal_id: taskRow.goal_id,
+      available_time_minutes: parsed.data.availableTime
+    }
+  );
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("Task session time updated.", "success");
 }
 
 export async function pauseGoal(formData: FormData) {
@@ -151,7 +749,7 @@ export async function startMicroAction(formData: FormData) {
 
   const { data } = await supabase
     .from("micro_actions")
-    .select("id, action_text, status, started_at, task_id, tasks!inner(id, title, goal_id, user_id, goals(title))")
+    .select("id, plan_id, action_text, status, started_at, task_id, tasks!inner(id, title, goal_id, deadline, available_time_minutes, user_id, goals(title))")
     .eq("id", microActionId)
     .eq("tasks.user_id", user.id)
     .maybeSingle();
@@ -176,6 +774,12 @@ export async function startMicroAction(formData: FormData) {
       dashboardRedirect("Unable to start micro-action.", "error");
     }
   }
+
+  await writable
+    .from("scheduled_blocks")
+    .update({ status: "in_progress" })
+    .eq("micro_action_id", microAction.id)
+    .eq("user_id", user.id);
 
   const { data: taskData } = await supabase
     .from("tasks")
@@ -221,7 +825,7 @@ export async function completeMicroAction(formData: FormData) {
 
   const { data } = await supabase
     .from("micro_actions")
-    .select("id, action_text, estimated_minutes, status, started_at, task_id, tasks!inner(id, title, goal_id, user_id, goals(title))")
+    .select("id, plan_id, action_text, estimated_minutes, status, started_at, task_id, tasks!inner(id, title, goal_id, deadline, available_time_minutes, user_id, goals(title))")
     .eq("id", microActionId)
     .eq("tasks.user_id", user.id)
     .maybeSingle();
@@ -250,6 +854,28 @@ export async function completeMicroAction(formData: FormData) {
     dashboardRedirect("Unable to complete micro-action.", "error");
   }
 
+  await writable
+    .from("scheduled_blocks")
+    .update({ status: "completed" })
+    .eq("micro_action_id", microAction.id)
+    .eq("user_id", user.id);
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+  await insertBehaviorMemoryLogs(
+    writable,
+    user.id,
+    buildBlockOutcomeMemories({
+      eventType: "block_completed",
+      block: {
+        start_time: startedAt,
+        end_time: completedAt,
+        schedule_reason: null
+      },
+      taskTitle: microAction.tasks.title,
+      actionText: microAction.action_text,
+      workStyle
+    })
+  );
+
   await insertTaskHistoryMemory(
     writable,
     user.id,
@@ -268,38 +894,24 @@ export async function completeMicroAction(formData: FormData) {
     }
   );
 
-  const { data: remainingPending } = await supabase
-    .from("micro_actions")
-    .select("id")
-    .eq("task_id", microAction.task_id)
-    .eq("status", "pending");
-
-  if ((remainingPending ?? []).length === 0) {
-    await writable
-      .from("tasks")
-      .update({
-        status: "done",
-        completed_at: completedAt,
-        started_at: startedAt
-      })
-      .eq("id", microAction.task_id)
-      .eq("user_id", user.id);
-
-    await insertTaskHistoryMemory(
-      writable,
-      user.id,
-      `Task completed through micro-actions: ${microAction.tasks.title}. Goal: ${microAction.tasks.goals?.title ?? "Unknown"}. Completed at ${completedAt}.`,
-      {
-        event_type: "task_completed",
-        task_id: microAction.tasks.id,
-        goal_id: microAction.tasks.goal_id,
-        completed_at: completedAt,
-        task_title: microAction.tasks.title,
-        goal_title: microAction.tasks.goals?.title ?? null,
-        completion_source: "all_micro_actions_done"
-      }
-    );
-  }
+  await advanceTaskPlanProgress({
+    supabase,
+    writable,
+    userId: user.id,
+    task: {
+      id: microAction.tasks.id,
+      title: microAction.tasks.title,
+      goal_id: microAction.tasks.goal_id,
+      available_time_minutes: microAction.tasks.available_time_minutes,
+      deadline: microAction.tasks.deadline,
+      status: "active",
+      started_at: startedAt,
+      goals: microAction.tasks.goals
+    },
+    planId: microAction.plan_id,
+    completedAt,
+    startedAt
+  });
 
   revalidatePath("/dashboard");
   dashboardRedirect("Micro-action completed.", "success");
@@ -313,7 +925,7 @@ export async function completeTask(formData: FormData) {
 
   const { data } = await supabase
     .from("tasks")
-    .select("id, title, goal_id, status, started_at, goals(title)")
+    .select("id, title, goal_id, deadline, available_time_minutes, status, started_at, goals(title)")
     .eq("id", taskId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -351,6 +963,33 @@ export async function completeTask(formData: FormData) {
     .eq("task_id", taskRow.id)
     .eq("status", "pending");
 
+  await writable
+    .from("plans")
+    .update({ status: "done" })
+    .eq("task_id", taskRow.id)
+    .eq("status", "active");
+
+  await writable
+    .from("plans")
+    .update({ status: "done" })
+    .eq("task_id", taskRow.id)
+    .eq("status", "queued");
+
+  const { data: scheduledBlockRows } = await writable
+    .from("scheduled_blocks")
+    .select("id")
+    .eq("task_id", taskRow.id);
+
+  if ((scheduledBlockRows ?? []).length > 0) {
+    await writable
+      .from("scheduled_blocks")
+      .update({
+        status: "completed"
+      })
+      .eq("task_id", taskRow.id)
+      .eq("user_id", user.id);
+  }
+
   await insertTaskHistoryMemory(
     writable,
     user.id,
@@ -369,4 +1008,212 @@ export async function completeTask(formData: FormData) {
 
   revalidatePath("/dashboard");
   dashboardRedirect("Task completed.", "success");
+}
+
+export async function completeScheduledBlock(formData: FormData) {
+  const blockId = getFormString(formData, "blockId");
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+  const completedAt = new Date().toISOString();
+
+  const { data } = await supabase
+    .from("scheduled_blocks")
+    .select(
+      "id, user_id, task_id, micro_action_id, start_time, end_time, status, schedule_reason, rescheduled_from_block_id, tasks(id, title, deadline, available_time_minutes, user_id, goal_id, goals(title)), micro_actions(id, plan_id, action_text, estimated_minutes, status)"
+    )
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const block = (data ?? null) as ScheduledBlockRecord | null;
+
+  if (!block || !block.micro_actions || !block.micro_action_id) {
+    dashboardRedirect("Scheduled block not found.", "error");
+  }
+
+  if (block.micro_actions.status !== "pending") {
+    dashboardRedirect("This block's micro-action is already finished.", "error");
+  }
+
+  const { error: microActionError } = await writable
+    .from("micro_actions")
+    .update({
+      status: "done",
+      started_at: block.start_time,
+      completed_at: completedAt
+    })
+    .eq("id", block.micro_action_id)
+    .eq("task_id", block.task_id ?? "");
+
+  if (microActionError) {
+    dashboardRedirect("Unable to complete the scheduled block.", "error");
+  }
+
+  const { error: blockError } = await writable
+    .from("scheduled_blocks")
+    .update({
+      status: "completed"
+    })
+    .eq("id", block.id)
+    .eq("user_id", user.id);
+
+  if (blockError) {
+    dashboardRedirect("Micro-action completed, but block status failed to update.", "error");
+  }
+
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+  await insertBehaviorMemoryLogs(
+    writable,
+    user.id,
+    buildBlockOutcomeMemories({
+      eventType: "block_completed",
+      block: toTodayScheduledBlock(block),
+      taskTitle: block.tasks?.title,
+      actionText: block.micro_actions.action_text,
+      workStyle
+    })
+  );
+
+  if (block.task_id && block.tasks) {
+    await advanceTaskPlanProgress({
+      supabase,
+      writable,
+      userId: user.id,
+      task: {
+        id: block.tasks.id,
+        title: block.tasks.title,
+        goal_id: block.tasks.goal_id,
+        deadline: block.tasks.deadline,
+        available_time_minutes: block.tasks.available_time_minutes,
+        status: "active",
+        started_at: block.start_time,
+        goals: block.tasks.goals
+      },
+      planId: block.micro_actions.plan_id,
+      completedAt,
+      startedAt: block.start_time
+    });
+  }
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("Scheduled block completed.", "success");
+}
+
+export async function skipScheduledBlock(formData: FormData) {
+  const blockId = getFormString(formData, "blockId");
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+  const preferences = await getSchedulePreferences(user.id);
+
+  if (!preferences) {
+    dashboardRedirect("Set schedule preferences before skipping and rescheduling blocks.", "error");
+  }
+
+  const { data } = await supabase
+    .from("scheduled_blocks")
+    .select(
+      "id, user_id, task_id, micro_action_id, start_time, end_time, status, schedule_reason, rescheduled_from_block_id, tasks(id, title, deadline, available_time_minutes, user_id, goal_id, goals(title)), micro_actions(id, plan_id, action_text, estimated_minutes, status)"
+    )
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const block = (data ?? null) as ScheduledBlockRecord | null;
+
+  if (!block) {
+    dashboardRedirect("Scheduled block not found.", "error");
+  }
+
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+  await rescheduleScheduledBlockInternal({
+    supabase,
+    writable,
+    userId: user.id,
+    block,
+    preferences,
+    workStyle,
+    eventType: "block_skipped",
+    nextStatus: "skipped"
+  });
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("Block skipped and moved to the next safe slot.", "success");
+}
+
+export async function needMoreTimeForScheduledBlock(formData: FormData) {
+  const blockId = getFormString(formData, "blockId");
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+  const preferences = await getSchedulePreferences(user.id);
+
+  if (!preferences) {
+    dashboardRedirect("Set schedule preferences before extending blocks.", "error");
+  }
+
+  const { data } = await supabase
+    .from("scheduled_blocks")
+    .select(
+      "id, user_id, task_id, micro_action_id, start_time, end_time, status, schedule_reason, rescheduled_from_block_id, tasks(id, title, deadline, available_time_minutes, user_id, goal_id, goals(title)), micro_actions(id, plan_id, action_text, estimated_minutes, status)"
+    )
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const block = (data ?? null) as ScheduledBlockRecord | null;
+
+  if (!block) {
+    dashboardRedirect("Scheduled block not found.", "error");
+  }
+
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+  await rescheduleScheduledBlockInternal({
+    supabase,
+    writable,
+    userId: user.id,
+    block,
+    preferences,
+    workStyle,
+    eventType: "block_need_more_time",
+    nextStatus: "rescheduled"
+  });
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("A follow-up block was added.", "success");
+}
+
+export async function rescheduleScheduledBlock(formData: FormData) {
+  const blockId = getFormString(formData, "blockId");
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+  const preferences = await getSchedulePreferences(user.id);
+
+  if (!preferences) {
+    dashboardRedirect("Set schedule preferences before rescheduling blocks.", "error");
+  }
+
+  const { data } = await supabase
+    .from("scheduled_blocks")
+    .select(
+      "id, user_id, task_id, micro_action_id, start_time, end_time, status, schedule_reason, rescheduled_from_block_id, tasks(id, title, deadline, available_time_minutes, user_id, goal_id, goals(title)), micro_actions(id, plan_id, action_text, estimated_minutes, status)"
+    )
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const block = (data ?? null) as ScheduledBlockRecord | null;
+
+  if (!block) {
+    dashboardRedirect("Scheduled block not found.", "error");
+  }
+
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+  await rescheduleScheduledBlockInternal({
+    supabase,
+    writable,
+    userId: user.id,
+    block,
+    preferences,
+    workStyle,
+    eventType: "block_rescheduled",
+    nextStatus: "rescheduled"
+  });
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("Block moved to the next safe slot.", "success");
 }
