@@ -83,13 +83,14 @@ export const generateMicroActionRequestSchema = z.object({
 export const taskSchema = z.object({
   goalId: z.string().uuid("Select a goal."),
   title: z.string().min(3, "Task title is too short."),
+  reward: z.string().min(2, "Add a reward for finishing this task."),
   planTitles: z.string().optional(),
   deadline: z.string().optional(),
   availableTime: z.coerce
     .number()
     .int()
     .min(5, "Available time must be at least 5 minutes.")
-    .max(180, "Available time must be 180 minutes or less."),
+    .max(600, "Available time must be 600 minutes or less."),
   energyLevel: z.enum(ENERGY_LEVEL_OPTIONS)
 });
 
@@ -99,5 +100,5 @@ export const taskAvailableTimeSchema = z.object({
     .number()
     .int()
     .min(5, "Available time must be at least 5 minutes.")
-    .max(180, "Available time must be 180 minutes or less.")
+    .max(600, "Available time must be 600 minutes or less.")
 });

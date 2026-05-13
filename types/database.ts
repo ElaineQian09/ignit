@@ -159,6 +159,7 @@ export interface Database {
           user_id: string;
           goal_id: string;
           title: string;
+          reward: string | null;
           deadline: string | null;
           available_time_minutes: number | null;
           status: "active" | "done" | "archived";
@@ -172,6 +173,7 @@ export interface Database {
           user_id: string;
           goal_id: string;
           title: string;
+          reward?: string | null;
           deadline?: string | null;
           available_time_minutes?: number | null;
           status?: "active" | "done" | "archived";
@@ -185,6 +187,7 @@ export interface Database {
           user_id?: string;
           goal_id?: string;
           title?: string;
+          reward?: string | null;
           deadline?: string | null;
           available_time_minutes?: number | null;
           status?: "active" | "done" | "archived";
@@ -478,6 +481,135 @@ export interface Database {
             columns: ["user_id"];
             isOneToOne: false;
             referencedRelation: "users";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      agent_runs: {
+        Row: {
+          id: string;
+          user_id: string;
+          task_id: string | null;
+          plan_id: string | null;
+          workflow: string;
+          trigger_source:
+            | "task_creation"
+            | "api_generate_micro_action"
+            | "schedule_recovery"
+            | "manual_replan";
+          status: "running" | "completed" | "failed" | "cancelled";
+          input: Json | null;
+          shared_state: Json;
+          final_output: Json | null;
+          started_at: string;
+          completed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          task_id?: string | null;
+          plan_id?: string | null;
+          workflow?: string;
+          trigger_source:
+            | "task_creation"
+            | "api_generate_micro_action"
+            | "schedule_recovery"
+            | "manual_replan";
+          status?: "running" | "completed" | "failed" | "cancelled";
+          input?: Json | null;
+          shared_state?: Json;
+          final_output?: Json | null;
+          started_at?: string;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          task_id?: string | null;
+          plan_id?: string | null;
+          workflow?: string;
+          trigger_source?:
+            | "task_creation"
+            | "api_generate_micro_action"
+            | "schedule_recovery"
+            | "manual_replan";
+          status?: "running" | "completed" | "failed" | "cancelled";
+          input?: Json | null;
+          shared_state?: Json;
+          final_output?: Json | null;
+          started_at?: string;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "agent_runs_plan_id_fkey";
+            columns: ["plan_id"];
+            isOneToOne: false;
+            referencedRelation: "plans";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "agent_runs_task_id_fkey";
+            columns: ["task_id"];
+            isOneToOne: false;
+            referencedRelation: "tasks";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "agent_runs_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      agent_steps: {
+        Row: {
+          id: string;
+          agent_run_id: string;
+          agent_name: string;
+          step_kind: "agent_result" | "handoff" | "decision" | "error";
+          status: "pending" | "completed" | "failed" | "skipped";
+          input: Json | null;
+          output: Json | null;
+          summary: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          agent_run_id: string;
+          agent_name: string;
+          step_kind?: "agent_result" | "handoff" | "decision" | "error";
+          status?: "pending" | "completed" | "failed" | "skipped";
+          input?: Json | null;
+          output?: Json | null;
+          summary?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          agent_run_id?: string;
+          agent_name?: string;
+          step_kind?: "agent_result" | "handoff" | "decision" | "error";
+          status?: "pending" | "completed" | "failed" | "skipped";
+          input?: Json | null;
+          output?: Json | null;
+          summary?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "agent_steps_agent_run_id_fkey";
+            columns: ["agent_run_id"];
+            isOneToOne: false;
+            referencedRelation: "agent_runs";
             referencedColumns: ["id"];
           }
         ];

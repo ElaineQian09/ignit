@@ -26,6 +26,7 @@ export default async function TaskCreationPage({
     .eq("status", "active")
     .order("created_at", { ascending: true });
   const goals = (goalsData ?? []) as Array<{ id: string; title: string }>;
+  const primaryGoal = goals[0] ?? null;
 
   return (
     <AppShell>
@@ -37,11 +38,10 @@ export default async function TaskCreationPage({
           >
             ← Back to dashboard
           </Link>
-          <h1 className="mt-4 text-4xl font-semibold">Create a new task</h1>
+          <h1 className="mt-4 text-4xl font-semibold">Add a daily task</h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-            Make this a broad workstream if needed. Ignit will turn the first
-            session into small, safe starting actions instead of an overwhelming
-            master plan.
+            Pick one thing you want to clear today. Ignit will break it into the
+            smallest playable steps, and the reward is the point of the run.
           </p>
         </div>
 
@@ -50,83 +50,116 @@ export default async function TaskCreationPage({
             <FormNotice message={error} tone="error" />
 
             <div className="mt-4 space-y-6">
-              <div>
-                <label htmlFor="goalId" className="label">
-                  Goal
-                </label>
-                <select id="goalId" name="goalId" className="field" required>
-                  <option value="">Select a goal</option>
-                  {(goals ?? []).map((goal) => (
-                    <option key={goal.id} value={goal.id}>
-                      {goal.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {primaryGoal ? (
+                <div className="rounded-[1.5rem] border border-[var(--border)] bg-[rgba(255,255,255,0.72)] p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                    Current big goal
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">{primaryGoal.title}</p>
+                  <input type="hidden" name="goalId" value={primaryGoal.id} />
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="goalId" className="label">
+                    Goal
+                  </label>
+                  <select id="goalId" name="goalId" className="field" required>
+                    <option value="">Select a goal</option>
+                    {(goals ?? []).map((goal) => (
+                      <option key={goal.id} value={goal.id}>
+                        {goal.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label htmlFor="title" className="label">
-                  Big task or workstream
+                  Today&apos;s task
                 </label>
                 <textarea
                   id="title"
                   name="title"
-                  rows={4}
-                  placeholder="Find a job\nPrepare behavior questions\nPrepare technical questions"
+                  rows={3}
+                  placeholder="Send the recruiter follow-up email"
                   className="field resize-none"
                   required
                 />
                 <p className="mt-2 text-sm text-[var(--muted)]">
-                  Broad tasks are fine here. Ignit uses the next field to decide
-                  how small the first session should be.
+                  Keep it as one daily mission. Ignit will split it into tiny executable moves.
                 </p>
               </div>
 
               <div>
                 <label htmlFor="planTitles" className="label">
-                  Plans under this task
+                  Optional stages
                 </label>
                 <textarea
                   id="planTitles"
                   name="planTitles"
-                  rows={4}
-                  placeholder={"Prepare behavior questions\nPrepare technical questions\nUpdate resume"}
+                  rows={3}
+                  placeholder={"Draft email\nProofread\nSend"}
                   className="field resize-none"
                 />
                 <p className="mt-2 text-sm text-[var(--muted)]">
-                  Optional. Add one plan per line. The first one becomes the current
-                  focus plan, and the rest stay queued behind it.
+                  One stage per line if you already know the sequence. Otherwise leave it blank.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="reward" className="label">
+                  Reward after task done
+                </label>
+                <input
+                  id="reward"
+                  name="reward"
+                  type="text"
+                  placeholder="Matcha latte and one guilt-free episode"
+                  className="field"
+                  required
+                />
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  This should be the thing you actually want after clearing the task.
                 </p>
               </div>
 
               <div className="grid gap-6 md:grid-cols-2">
                 <div>
                   <label htmlFor="deadline" className="label">
-                    Deadline
+                    Deadline (optional)
                   </label>
                   <input id="deadline" name="deadline" type="date" className="field" />
                 </div>
 
                 <div>
                   <label htmlFor="availableTime" className="label">
-                    Time for the first session
+                    Estimated time for this daily task
                   </label>
-                  <select
+                  <input
                     id="availableTime"
                     name="availableTime"
-                    defaultValue="15"
+                    type="number"
+                    min={5}
+                    max={600}
+                    step={5}
+                    defaultValue={25}
+                    list="daily-task-time-options"
                     className="field"
-                  >
-                    <option value="5">5 minutes</option>
-                    <option value="10">10 minutes</option>
-                    <option value="15">15 minutes</option>
-                    <option value="25">25 minutes</option>
-                    <option value="45">45 minutes</option>
-                    <option value="60">60 minutes</option>
-                  </select>
+                    required
+                  />
+                  <datalist id="daily-task-time-options">
+                    <option value="15" />
+                    <option value="25" />
+                    <option value="45" />
+                    <option value="60" />
+                    <option value="90" />
+                    <option value="120" />
+                    <option value="180" />
+                    <option value="300" />
+                  </datalist>
                   <p className="mt-2 text-sm text-[var(--muted)]">
-                    This is not the full task estimate. It is just the time you
-                    want Ignit to use for the first planning session.
+                    You can type your own number too, including long tasks like 180 or 300 minutes.
                   </p>
                 </div>
               </div>
@@ -155,7 +188,7 @@ export default async function TaskCreationPage({
 
             <div className="mt-8">
               <SubmitButton
-                label="Generate micro-actions"
+                label="Build my quest steps"
                 pendingLabel="Creating task..."
               />
             </div>
@@ -163,25 +196,23 @@ export default async function TaskCreationPage({
 
           <aside className="space-y-6">
             <div className="surface rounded-[2rem] p-6">
-              <h2 className="text-xl font-semibold">How Ignit thinks</h2>
+              <h2 className="text-xl font-semibold">What happens next</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                The planner does not optimize for finishing the whole task. It
-                optimizes for making the next session small enough to start,
-                even when the task itself is still large.
+                Ignit turns the daily task into one or two psychologically small micro-tasks.
+                They should feel light enough to start without your brain pushing back.
               </p>
             </div>
 
             <div className="surface rounded-[2rem] p-6">
-              <h2 className="text-xl font-semibold">Parallel agent flow</h2>
+              <h2 className="text-xl font-semibold">How the system thinks</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                This task flow now uses the same modular agent pipeline as the
-                micro-action API:
+                The coordinator now checks four things before showing your next move:
               </p>
               <ul className="mt-4 space-y-2 text-sm leading-6 text-[var(--muted)]">
-                <li>Retrieve similar past stalls from embeddings.</li>
-                <li>Classify the likely source of resistance.</li>
-                <li>Generate one low-friction start step per plan.</li>
-                <li>Schedule the active plan when preferences are configured.</li>
+                <li>Your past stall patterns.</li>
+                <li>What kind of resistance this task creates.</li>
+                <li>Whether the generated step is small enough.</li>
+                <li>Whether a safer fallback step is needed.</li>
               </ul>
             </div>
           </aside>

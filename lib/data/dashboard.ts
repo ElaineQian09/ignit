@@ -25,6 +25,7 @@ interface TaskQueryRow {
   user_id: string;
   goal_id: string;
   title: string;
+  reward: string | null;
   deadline: string | null;
   available_time_minutes: number | null;
   status: "active" | "done" | "archived";
@@ -71,6 +72,16 @@ interface CompletedMicroActionRow {
   tasks: { user_id: string } | null;
 }
 
+interface CompletedTaskRow {
+  id: string;
+  title: string;
+  reward: string | null;
+  deadline: string | null;
+  available_time_minutes: number | null;
+  completed_at: string | null;
+  goals: { title: string } | null;
+}
+
 function startOfWeek(value: Date) {
   const next = new Date(value);
   next.setHours(0, 0, 0, 0);
@@ -78,7 +89,10 @@ function startOfWeek(value: Date) {
   return next;
 }
 
-function buildCompletionStats(rows: CompletedMicroActionRow[]): CompletionStats {
+function buildCompletionStats(
+  rows: CompletedMicroActionRow[],
+  completedTasks: CompletedTaskRow[]
+): CompletionStats {
   const completedRows = rows.filter(
     (row): row is CompletedMicroActionRow & { completed_at: string } =>
       Boolean(row.completed_at)
@@ -110,7 +124,8 @@ function buildCompletionStats(rows: CompletedMicroActionRow[]): CompletionStats 
     completed_micro_actions_this_week: completedRows.filter(
       (row) => new Date(row.completed_at) >= weekStart
     ).length,
-    completed_micro_actions_total: completedRows.length
+    completed_micro_actions_total: completedRows.length,
+    completed_tasks_total: completedTasks.length
   };
 }
 
@@ -121,7 +136,8 @@ export async function getDashboardData(userId: string) {
     { data: goals },
     { data: tasks },
     { data: scheduledBlocks },
-    { data: completedMicroActions }
+    { data: completedMicroActions },
+    { data: completedTasks }
   ] = await Promise.all([
     supabase
       .from("goals")
@@ -132,7 +148,7 @@ export async function getDashboardData(userId: string) {
     supabase
       .from("tasks")
       .select(
-        "id, user_id, goal_id, title, deadline, available_time_minutes, status, started_at, completed_at, created_at, updated_at, goals(title), plans(id, task_id, title, status, sort_order, created_at, updated_at, micro_actions(id, task_id, plan_id, action_text, estimated_minutes, status, started_at, completed_at, created_at, updated_at))"
+        "id, user_id, goal_id, title, reward, deadline, available_time_minutes, status, started_at, completed_at, created_at, updated_at, goals(title), plans(id, task_id, title, status, sort_order, created_at, updated_at, micro_actions(id, task_id, plan_id, action_text, estimated_minutes, status, started_at, completed_at, created_at, updated_at))"
       )
       .eq("user_id", userId)
       .eq("status", "active")
@@ -150,7 +166,13 @@ export async function getDashboardData(userId: string) {
       .select("id, completed_at, tasks!inner(user_id)")
       .eq("status", "done")
       .eq("tasks.user_id", userId)
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("tasks")
+      .select("id, title, reward, deadline, available_time_minutes, completed_at, goals(title)")
+      .eq("user_id", userId)
+      .eq("status", "done")
+      .order("completed_at", { ascending: false })
   ]);
 
   const activeGoals = (goals ?? []) as Goal[];
@@ -169,6 +191,7 @@ export async function getDashboardData(userId: string) {
       user_id: task.user_id,
       goal_id: task.goal_id,
       title: task.title,
+      reward: task.reward,
       deadline: task.deadline,
       available_time_minutes: task.available_time_minutes,
       status: task.status,
@@ -210,12 +233,31 @@ export async function getDashboardData(userId: string) {
     .filter((block) => new Date(block.start_time) > now && !isSameLocalDay(block.start_time, now))
     .slice(0, 6) as TodayScheduledBlock[];
   const completionStats = buildCompletionStats(
-    (completedMicroActions ?? []) as CompletedMicroActionRow[]
+    (completedMicroActions ?? []) as CompletedMicroActionRow[],
+    (completedTasks ?? []) as CompletedTaskRow[]
   );
+  const finishedTasks = ((completedTasks ?? []) as CompletedTaskRow[]).map((task) => ({
+    id: task.id,
+    user_id: userId,
+    goal_id: "",
+    title: task.title,
+    reward: task.reward,
+    deadline: task.deadline,
+    available_time_minutes: task.available_time_minutes,
+    status: "done",
+    started_at: null,
+    completed_at: task.completed_at,
+    created_at: task.completed_at ?? new Date().toISOString(),
+    updated_at: task.completed_at ?? new Date().toISOString(),
+    goal_title: task.goals?.title ?? null,
+    plans: [],
+    micro_actions: []
+  })) as TaskWithRelations[];
 
   return {
     activeGoals,
     activeTasks,
+    completedTasks: finishedTasks,
     todaySchedule,
     upcomingSchedule,
     completionStats

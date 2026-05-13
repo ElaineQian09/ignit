@@ -1,207 +1,330 @@
-import { completeTask, updateTaskAvailableTime } from "@/app/dashboard/actions";
-import { formatDate, formatDateTime } from "@/lib/utils";
-import type { TaskWithRelations } from "@/types/domain";
+import {
+  completeMicroAction,
+  completeTask,
+  swapMicroTask,
+  updateTaskAvailableTime
+} from "@/app/dashboard/actions";
+import {
+  daysRemainingLabel,
+  formatDate,
+  formatDurationMinutes
+} from "@/lib/utils";
+import type { MicroAction, TaskWithRelations } from "@/types/domain";
 
-export function TaskList({
-  tasks,
-  hasActiveGoals
+function ProgressBar({
+  completedCount,
+  totalCount
 }: {
-  tasks: TaskWithRelations[];
-  hasActiveGoals: boolean;
+  completedCount: number;
+  totalCount: number;
 }) {
-  if (tasks.length === 0) {
+  const percent = totalCount === 0 ? 0 : (completedCount / totalCount) * 100;
+
+  return (
+    <div className="rounded-[1.4rem] border border-[var(--border)] bg-white/72 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium">{completedCount}/{totalCount} micro-tasks done</p>
+        <span className="text-xs text-[var(--muted)]">{Math.round(percent)}%</span>
+      </div>
+      <div className="mt-3 h-3 overflow-hidden rounded-full bg-[rgba(31,20,11,0.08)]">
+        <div
+          className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent),#ffb14a)]"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MicroTaskCard({
+  action,
+  taskId
+}: {
+  action: MicroAction | null;
+  taskId: string;
+}) {
+  if (!action) {
     return (
-      <div className="space-y-2 text-sm text-[var(--muted)]">
-        <p>
-          {hasActiveGoals
-            ? "You have an active goal, but no task under it yet."
-            : "No active tasks yet."}
+      <div className="rounded-[1.7rem] border border-[var(--border)] bg-white/78 p-5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">
+          Micro-task
         </p>
-        <p>
-          {hasActiveGoals
-            ? "Goals stay broad. Add a task under that goal, and Ignit will generate the first micro-actions."
-            : "Create one and Ignit will generate the first micro-actions."}
+        <h4 className="mt-3 text-2xl font-semibold">All micro-tasks are done</h4>
+        <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+          There is no active micro-task left here. You can close the daily task and take the reward.
         </p>
       </div>
     );
   }
 
-  const [focusTask, ...queuedTasks] = tasks;
-  const focusPlan =
-    focusTask.plans.find((plan) => plan.status === "active") ?? focusTask.plans[0] ?? null;
-  const queuedPlans = focusTask.plans.filter((plan) => plan.status === "queued");
-  const pendingFocusMicroActions =
-    focusPlan?.micro_actions.filter((action) => action.status === "pending").length ?? 0;
-  const pendingTaskMicroActions = focusTask.micro_actions.filter(
-    (action) => action.status === "pending"
-  ).length;
+  return (
+    <div className="rounded-[1.7rem] border border-[var(--border)] bg-white/78 p-5 shadow-[0_18px_40px_rgba(72,44,18,0.08)]">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="rounded-full bg-[rgba(235,91,44,0.12)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">
+          Current micro-task
+        </span>
+        <span className="text-xs text-[var(--muted)]">Small enough to start</span>
+      </div>
+
+      <p className="mt-4 text-xl leading-9">{action.action_text}</p>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+        <form action={completeMicroAction}>
+          <input type="hidden" name="microActionId" value={action.id} />
+          <button
+            type="submit"
+            className="w-full rounded-full bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-strong)]"
+          >
+            Finish this micro-task
+          </button>
+        </form>
+        <form action={swapMicroTask}>
+          <input type="hidden" name="microActionId" value={action.id} />
+          <input type="hidden" name="taskId" value={taskId} />
+          <button
+            type="submit"
+            className="w-full rounded-full border border-[var(--border)] bg-white px-4 py-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)]"
+          >
+            Swap micro-task
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AdditionalMicroTasks({
+  actions
+}: {
+  actions: MicroAction[];
+}) {
+  const secondaryPending = actions.filter((action) => action.status === "pending").slice(1);
+  const completed = actions.filter((action) => action.status === "done");
+
+  if (secondaryPending.length === 0 && completed.length === 0) {
+    return null;
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-[1.75rem] border border-[var(--border)] bg-white/80 p-5 sm:p-6">
-        <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <span className="rounded-full bg-[rgba(235,91,44,0.12)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--accent-strong)]">
-              Current focus
-            </span>
-            <p className="mt-3 text-xl font-semibold leading-tight sm:text-2xl">
-              {focusTask.title}
-            </p>
-            <p className="mt-1 text-sm text-[var(--muted)]">
-              {focusTask.goal_title ?? "Unassigned goal"}
-            </p>
-            {focusTask.started_at ? (
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                Started {formatDateTime(focusTask.started_at)}
-              </p>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-3 lg:justify-end">
-            <span className="text-sm text-[var(--muted)]">
-              {formatDate(focusTask.deadline)}
-            </span>
-            <form action={completeTask}>
-              <input type="hidden" name="taskId" value={focusTask.id} />
-              <button
-                type="submit"
-                className="rounded-full border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)]"
-              >
-                ☑ Done
-              </button>
-            </form>
+    <div className="grid gap-3 lg:grid-cols-2">
+      {secondaryPending.map((action) => (
+        <div
+          key={action.id}
+          className="rounded-[1.5rem] border border-[var(--border)] bg-white/72 p-4"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">
+            Up next micro-task
+          </p>
+          <p className="mt-3 text-sm leading-7">{action.action_text}</p>
+        </div>
+      ))}
+
+      {completed.map((action) => (
+        <div
+          key={action.id}
+          className="rounded-[1.5rem] border border-[var(--border)] bg-[rgba(255,255,255,0.65)] p-4"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--teal)]">
+            Cleared
+          </p>
+          <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{action.action_text}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DailyTaskCard({ task, label }: { task: TaskWithRelations; label: string }) {
+  const activePlan =
+    task.plans.find((plan) => plan.status === "active") ?? task.plans[0] ?? null;
+  const actions = activePlan?.micro_actions.length ? activePlan.micro_actions : task.micro_actions;
+  const currentMicroTask = actions.find((action) => action.status === "pending") ?? null;
+  const completedCount = actions.filter((action) => action.status === "done").length;
+  const totalCount = Math.max(actions.length, 1);
+  const canComplete = currentMicroTask === null;
+
+  return (
+    <article className="surface rounded-[2.2rem] p-6 sm:p-7">
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <span className="inline-flex rounded-full bg-[rgba(31,20,11,0.08)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+            {label}
+          </span>
+          <h3 className="mt-3 text-3xl font-semibold leading-tight">{task.title}</h3>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--muted)]">
+            <span>{task.goal_title ?? "Big goal not set"}</span>
+            <span>{formatDate(task.deadline)}</span>
+            <span>{daysRemainingLabel(task.deadline)}</span>
+            <span>{formatDurationMinutes(task.available_time_minutes) ?? "No estimate"}</span>
           </div>
         </div>
 
-        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:items-start">
-          <div className="space-y-4">
-            {focusPlan ? (
-              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[rgba(235,91,44,0.06)] px-4 py-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">
-                  Active plan
-                </p>
-                <div className="mt-3 space-y-3">
-                  <div className="min-w-0">
-                    <p className="text-lg font-semibold leading-7 sm:text-xl">
-                      {focusPlan.title}
-                    </p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">
-                      {pendingFocusMicroActions} pending micro-actions in this plan
-                    </p>
-                  </div>
-                  {queuedPlans.length > 0 ? (
-                    <div className="rounded-2xl border border-[var(--border)] bg-white/75 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                        Up next
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {queuedPlans.map((plan) => (
-                          <span
-                            key={plan.id}
-                            className="rounded-full border border-[var(--border)] bg-white px-3 py-1 text-xs text-[var(--muted)]"
-                          >
-                            {plan.title}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="grid gap-3 xl:grid-cols-2">
-              <div className="rounded-2xl border border-[var(--border)] bg-white/70 px-4 py-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                  In this task
-                </p>
-                <p className="mt-2 text-2xl font-semibold">{pendingTaskMicroActions}</p>
-                <p className="mt-1 text-sm text-[var(--muted)]">
-                  pending micro-actions across the full task
-                </p>
-              </div>
-              <div className="rounded-2xl border border-[var(--border)] bg-white/70 px-4 py-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                  Planning note
-                </p>
-                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                  Keep the task broad. Session time tells Ignit how much of this
-                  workstream to touch in the next block, not how long the whole
-                  task should take.
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="rounded-[1.5rem] border border-[var(--border)] bg-white/72 p-4 sm:p-5">
-            <form action={updateTaskAvailableTime} className="space-y-3">
-              <input type="hidden" name="taskId" value={focusTask.id} />
-              <div>
-                <label
-                  htmlFor={`availableTime-${focusTask.id}`}
-                  className="mb-2 block text-sm font-medium text-[var(--foreground)]"
-                >
-                  Session time
-                </label>
-                <select
-                  id={`availableTime-${focusTask.id}`}
-                  name="availableTime"
-                  defaultValue={String(focusTask.available_time_minutes ?? 15)}
-                  className="field w-full"
-                >
-                  <option value="5">5 minutes</option>
-                  <option value="10">10 minutes</option>
-                  <option value="15">15 minutes</option>
-                  <option value="25">25 minutes</option>
-                  <option value="45">45 minutes</option>
-                  <option value="60">60 minutes</option>
-                </select>
-              </div>
-              <p className="text-sm leading-6 text-[var(--muted)]">
-                Update the size of the next focused work block for this task.
-              </p>
-              <button
-                type="submit"
-                className="w-full rounded-full border border-[var(--border)] bg-white px-4 py-2 text-sm font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)]"
-              >
-                Update time
-              </button>
-            </form>
-          </div>
+        <div className="quest-reward-box w-full max-w-sm rounded-[1.7rem] border border-[var(--border)] p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+            Reward
+          </p>
+          <p className="mt-3 text-xl font-semibold">{task.reward ?? "Pick a reward next time."}</p>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+            This is the positive payoff your brain is working toward.
+          </p>
         </div>
       </div>
 
-      {queuedTasks.length > 0 ? (
-        <div className="rounded-[1.5rem] border border-[var(--border)] bg-white/55 px-4 py-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-            Queued next
+      <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-[1.7rem] border border-[var(--border)] bg-white/72 p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+            Current focus
           </p>
-          <div className="mt-3 space-y-3">
-            {queuedTasks.map((task) => (
-              <div
-                key={task.id}
-                className="rounded-2xl border border-[var(--border)] bg-white/75 px-4 py-3"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium">{task.title}</p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">
-                      {task.goal_title ?? "Unassigned goal"}
-                    </p>
-                    {task.plans.find((plan) => plan.status === "active") ? (
-                      <p className="mt-1 text-sm text-[var(--muted)]">
-                        Current plan:{" "}
-                        {task.plans.find((plan) => plan.status === "active")?.title}
-                      </p>
-                    ) : null}
-                  </div>
-                  <span className="text-sm text-[var(--muted)]">
-                    {task.available_time_minutes ?? 15} min session
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+          <p className="mt-3 text-2xl font-semibold">{activePlan?.title ?? task.title}</p>
+          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+            Keep this broad. The micro-task below is the psychologically smaller entry point.
+          </p>
         </div>
-      ) : null}
+
+        <form action={updateTaskAvailableTime} className="rounded-[1.7rem] border border-[var(--border)] bg-white/72 p-5">
+          <input type="hidden" name="taskId" value={task.id} />
+          <label
+            htmlFor={`availableTime-${task.id}`}
+            className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]"
+          >
+            Estimated prep time
+          </label>
+          <input
+            id={`availableTime-${task.id}`}
+            name="availableTime"
+            type="number"
+            min={5}
+            max={600}
+            step={5}
+            defaultValue={task.available_time_minutes ?? 25}
+            className="field mt-3"
+            required
+          />
+          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+            Type whatever fits, including long sessions like 180 or 300 minutes.
+          </p>
+          <button
+            type="submit"
+            className="mt-4 w-full rounded-full border border-[var(--border)] bg-white px-4 py-2 text-sm font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)]"
+          >
+            Update time
+          </button>
+        </form>
+      </div>
+
+      <div className="mt-4">
+        <ProgressBar completedCount={completedCount} totalCount={totalCount} />
+      </div>
+
+      <div className="mt-5 grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+        <MicroTaskCard action={currentMicroTask} taskId={task.id} />
+
+        <div className="rounded-[1.7rem] border border-[var(--border)] bg-[rgba(255,248,219,0.72)] p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+            Finish line
+          </p>
+          <h4 className="mt-3 text-2xl font-semibold">Close the daily task</h4>
+          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+            Once all micro-tasks are cleared, move this card into your completed collection.
+          </p>
+          <form action={completeTask} className="mt-6">
+            <input type="hidden" name="taskId" value={task.id} />
+            <button
+              type="submit"
+              disabled={!canComplete}
+              className="w-full rounded-full border border-[var(--foreground)] bg-white px-4 py-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[rgba(255,255,255,0.86)] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              Mark daily task done
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <AdditionalMicroTasks actions={actions} />
+      </div>
+    </article>
+  );
+}
+
+function CompletedCollection({ tasks }: { tasks: TaskWithRelations[] }) {
+  if (tasks.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-[2rem] border border-[var(--border)] bg-white/60 p-5">
+      <div className="mb-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+          Completed collection
+        </p>
+        <h3 className="mt-2 text-2xl font-semibold">Tasks you already cleared</h3>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {tasks.map((task) => (
+          <div
+            key={task.id}
+            className="rounded-[1.6rem] border border-[var(--border)] bg-[rgba(255,255,255,0.8)] p-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-lg font-semibold">{task.title}</p>
+              <span className="rounded-full bg-[rgba(15,118,110,0.14)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--teal)]">
+                Completed
+              </span>
+            </div>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              {task.goal_title ?? "Big goal not set"} · {formatDate(task.deadline)}
+            </p>
+            {task.reward ? (
+              <p className="mt-3 text-sm leading-6">
+                Reward: <span className="font-medium">{task.reward}</span>
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function TaskList({
+  tasks,
+  completedTasks,
+  hasActiveGoals
+}: {
+  tasks: TaskWithRelations[];
+  completedTasks: TaskWithRelations[];
+  hasActiveGoals: boolean;
+}) {
+  if (tasks.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-[2rem] border border-dashed border-[var(--border)] bg-[rgba(255,255,255,0.55)] px-6 py-10 text-center">
+          <p className="text-lg font-semibold">
+            {hasActiveGoals ? "No daily task yet." : "Set a big goal first."}
+          </p>
+          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+            {hasActiveGoals
+              ? "Add one daily task and Ignit will generate one or two psychologically small micro-tasks."
+              : "Use onboarding to define the long-term goal that sits above your daily task cards."}
+          </p>
+        </div>
+        <CompletedCollection tasks={completedTasks} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {tasks.map((task, index) => (
+        <DailyTaskCard
+          key={task.id}
+          task={task}
+          label={index === 0 ? "Main daily task" : "Daily task"}
+        />
+      ))}
+
+      <CompletedCollection tasks={completedTasks} />
     </div>
   );
 }

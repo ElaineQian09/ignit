@@ -65,6 +65,7 @@ export async function POST(request: Request) {
   const result = await generateMicroActionPlan({
     userId: user.id,
     task: parsed.data.task,
+    triggerSource: "api_generate_micro_action",
     energyLevel: parsed.data.energy_level,
     userPreferences: preferences,
     taskDeadline: parsed.data.deadline ?? null,
@@ -76,6 +77,9 @@ export async function POST(request: Request) {
     resistance_type: result.resistance_type,
     micro_action: result.micro_action,
     estimated_time: result.estimated_time,
+    review: result.review,
+    recovery_applied: result.recovery_applied,
+    agent_run_id: result.agent_run_id,
     schedule: {
       start_time: result.schedule.start_time,
       end_time: result.schedule.end_time

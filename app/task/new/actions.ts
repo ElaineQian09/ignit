@@ -22,6 +22,22 @@ function buildPlanTaskPrompt(taskTitle: string, planTitle: string) {
   return `${normalizedTask}. Current plan focus: ${normalizedPlan}.`;
 }
 
+function buildSecondaryMicroTask(
+  optionalNextStep: string,
+  fallbackMinutes: number
+) {
+  const text = optionalNextStep.trim();
+
+  if (!text) {
+    return null;
+  }
+
+  return {
+    action_text: text,
+    estimated_minutes: Math.max(3, Math.min(fallbackMinutes + 2, 12))
+  };
+}
+
 function getPlanningPreferences(
   preferences: UserSchedulePreferences | null
 ): Pick<
@@ -57,6 +73,7 @@ export async function createTask(formData: FormData) {
   const parsed = taskSchema.safeParse({
     goalId: formData.get("goalId"),
     title: formData.get("title"),
+    reward: formData.get("reward"),
     planTitles: formData.get("planTitles") || undefined,
     deadline: formData.get("deadline") || undefined,
     availableTime: formData.get("availableTime"),
@@ -97,6 +114,7 @@ export async function createTask(formData: FormData) {
     user_id: user.id,
     goal_id: goal.id,
     title: parsed.data.title,
+    reward: parsed.data.reward,
     deadline: parsed.data.deadline || null,
     available_time_minutes: parsed.data.availableTime,
     status: "active"
@@ -157,6 +175,9 @@ export async function createTask(formData: FormData) {
         microActionPlan: await generateMicroActionPlan({
           userId: user.id,
           task: buildPlanTaskPrompt(parsed.data.title, plan.title),
+          taskId: task.id,
+          planId: plan.id,
+          triggerSource: "task_creation",
           energyLevel: parsed.data.energyLevel,
           userPreferences: planningPreferences,
           taskDeadline: parsed.data.deadline || null,
@@ -166,14 +187,38 @@ export async function createTask(formData: FormData) {
       }))
   );
 
-  const microActionInsert = writable.from("micro_actions").insert(
-    generatedPlans.map(({ plan, microActionPlan }) => ({
+  const microActionRows = generatedPlans.flatMap(({ plan, microActionPlan }) => {
+    const primary = {
       task_id: task.id,
       plan_id: plan.id,
       action_text: microActionPlan.micro_action,
       estimated_minutes: microActionPlan.estimated_minutes,
       status: "pending" as const
-    }))
+    };
+    const secondary =
+      parsed.data.availableTime >= 25
+        ? buildSecondaryMicroTask(
+            microActionPlan.optional_next_step,
+            microActionPlan.estimated_minutes
+          )
+        : null;
+
+    return secondary
+      ? [
+          primary,
+          {
+            task_id: task.id,
+            plan_id: plan.id,
+            action_text: secondary.action_text,
+            estimated_minutes: secondary.estimated_minutes,
+            status: "pending" as const
+          }
+        ]
+      : [primary];
+  });
+
+  const microActionInsert = writable.from("micro_actions").insert(
+    microActionRows
   ) as {
     select: (
       columns: string
@@ -251,9 +296,10 @@ export async function createTask(formData: FormData) {
   await writable.from("memory_chunks").insert({
     user_id: user.id,
     source_type: "task_history",
-    content: `Task created: ${parsed.data.title}. Goal: ${goal.title}. Plans: ${planTitles.join(", ")}. First session time: ${parsed.data.availableTime} minutes. Energy: ${parsed.data.energyLevel}.`,
+    content: `Task created: ${parsed.data.title}. Goal: ${goal.title}. Plans: ${planTitles.join(", ")}. Estimated prep time: ${parsed.data.availableTime} minutes. Energy: ${parsed.data.energyLevel}.`,
     metadata: {
       goal_id: goal.id,
+      reward: parsed.data.reward,
       deadline: parsed.data.deadline || null,
       available_time_minutes: parsed.data.availableTime,
       plans: planTitles

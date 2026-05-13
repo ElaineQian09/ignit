@@ -11,6 +11,8 @@ export type UserSchedulePreferences =
 export type ScheduledBlock =
   Database["public"]["Tables"]["scheduled_blocks"]["Row"];
 export type MemoryLog = Database["public"]["Tables"]["memory_logs"]["Row"];
+export type AgentRun = Database["public"]["Tables"]["agent_runs"]["Row"];
+export type AgentStep = Database["public"]["Tables"]["agent_steps"]["Row"];
 
 export const WORK_STYLE_OPTIONS = [
   "Structured",
@@ -76,4 +78,5 @@ export interface CompletionStats {
   completed_micro_actions_today: number;
   completed_micro_actions_this_week: number;
   completed_micro_actions_total: number;
+  completed_tasks_total: number;
 }

@@ -9,6 +9,7 @@ import {
   buildScheduleAttemptMemories
 } from "@/lib/scheduling-memory";
 import { insertMemoryLogs } from "@/lib/memory-logs";
+import { generateMicroActionPlan } from "@/lib/orchestrator";
 import { createClient } from "@/lib/supabase/server";
 import { scheduleMicroActions } from "@/lib/scheduler";
 import { taskAvailableTimeSchema } from "@/lib/validators";
@@ -50,6 +51,7 @@ type TaskRecord = {
   id: string;
   title: string;
   goal_id: string;
+  reward?: string | null;
   deadline?: string | null;
   available_time_minutes: number | null;
   status: "active" | "done" | "archived";
@@ -649,7 +651,7 @@ export async function updateTaskAvailableTime(formData: FormData) {
   });
 
   if (!parsed.success) {
-    dashboardRedirect("Invalid session time.", "error");
+    dashboardRedirect("Invalid task time.", "error");
   }
 
   const { supabase, user } = await requireDashboardUser();
@@ -674,13 +676,13 @@ export async function updateTaskAvailableTime(formData: FormData) {
     .eq("user_id", user.id);
 
   if (error) {
-    dashboardRedirect("Unable to update task session time.", "error");
+    dashboardRedirect("Unable to update task time.", "error");
   }
 
   await insertTaskHistoryMemory(
     writable,
     user.id,
-    `Task session time updated: ${taskRow.title}. New available time: ${parsed.data.availableTime} minutes.`,
+    `Task estimated time updated: ${taskRow.title}. New available time: ${parsed.data.availableTime} minutes.`,
     {
       event_type: "task_session_time_updated",
       task_id: taskRow.id,
@@ -690,7 +692,96 @@ export async function updateTaskAvailableTime(formData: FormData) {
   );
 
   revalidatePath("/dashboard");
-  dashboardRedirect("Task session time updated.", "success");
+  dashboardRedirect("Task time updated.", "success");
+}
+
+export async function swapMicroTask(formData: FormData) {
+  const microActionId = getFormString(formData, "microActionId");
+  const { supabase, user } = await requireDashboardUser();
+  const writable = supabase as unknown as DashboardWriter;
+
+  const { data: microActionData } = await supabase
+    .from("micro_actions")
+    .select(
+      "id, plan_id, action_text, estimated_minutes, status, task_id, tasks!inner(id, title, goal_id, deadline, available_time_minutes, user_id, goals(title))"
+    )
+    .eq("id", microActionId)
+    .eq("tasks.user_id", user.id)
+    .maybeSingle();
+  const microAction = (microActionData ?? null) as (MicroActionRecord & {
+    estimated_minutes: number;
+  }) | null;
+
+  if (!microAction) {
+    dashboardRedirect("Micro-task not found.", "error");
+  }
+
+  if (microAction.status !== "pending") {
+    dashboardRedirect("Only pending micro-tasks can be replaced.", "error");
+  }
+
+  const preferences = await getSchedulePreferences(user.id);
+  const workStyle = await getWorkStyleForUser(supabase, user.id);
+
+  const regenerated = await generateMicroActionPlan({
+    userId: user.id,
+    task: microAction.tasks.title,
+    taskId: microAction.tasks.id,
+    planId: microAction.plan_id,
+    triggerSource: "manual_replan",
+    avoidMicroAction: microAction.action_text,
+    energyLevel: "medium",
+    userPreferences: {
+      preferred_days: preferences?.preferred_days ?? [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday"
+      ],
+      preferred_start_time: preferences?.preferred_start_time ?? "09:00",
+      preferred_end_time: preferences?.preferred_end_time ?? "17:00",
+      max_daily_focus_minutes: preferences?.max_daily_focus_minutes ?? 60,
+      preferred_session_minutes: preferences?.preferred_session_minutes ?? 25,
+      break_minutes: preferences?.break_minutes ?? 5,
+      high_energy_periods: preferences?.high_energy_periods ?? [],
+      low_energy_periods: preferences?.low_energy_periods ?? []
+    },
+    taskDeadline: microAction.tasks.deadline,
+    availableTimeToday: microAction.tasks.available_time_minutes ?? 25,
+    workStyle
+  });
+
+  const { error } = await writable
+    .from("micro_actions")
+    .update({
+      action_text: regenerated.micro_action,
+      estimated_minutes: regenerated.estimated_minutes,
+      started_at: null
+    })
+    .eq("id", microAction.id)
+    .eq("task_id", microAction.task_id);
+
+  if (error) {
+    dashboardRedirect("Unable to replace this micro-task.", "error");
+  }
+
+  await insertTaskHistoryMemory(
+    writable,
+    user.id,
+    `Micro-task replaced: ${microAction.tasks.title}. Previous: ${microAction.action_text}. New: ${regenerated.micro_action}.`,
+    {
+      event_type: "micro_action_replaced",
+      task_id: microAction.tasks.id,
+      goal_id: microAction.tasks.goal_id,
+      micro_action_id: microAction.id,
+      previous_action_text: microAction.action_text,
+      new_action_text: regenerated.micro_action
+    }
+  );
+
+  revalidatePath("/dashboard");
+  dashboardRedirect("Micro-task replaced.", "success");
 }
 
 export async function pauseGoal(formData: FormData) {
