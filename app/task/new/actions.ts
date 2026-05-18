@@ -4,37 +4,123 @@ import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
+import {
+  AiUsageLimitError,
+  getIpAddressFromHeaders,
+  reserveAiUsage
+} from "@/lib/ai-usage-guard";
+import { reviewAgent } from "@/lib/agents/reviewAgent";
 import { getSchedulePreferences, requireOnboardedUser } from "@/lib/auth";
-import { getBaseUrl } from "@/lib/env";
+import { getAiLimitEnv, getBaseUrl } from "@/lib/env";
 import { generateMicroActionPlan } from "@/lib/orchestrator";
 import { splitToList } from "@/lib/utils";
 import { taskSchema } from "@/lib/validators";
 import type { UserSchedulePreferences, WorkStyle } from "@/types/domain";
 
-function buildPlanTaskPrompt(taskTitle: string, planTitle: string) {
-  const normalizedTask = taskTitle.trim();
+function buildPlanFocus(taskTitle: string, planTitle: string) {
+  const normalizedTask = taskTitle.trim().toLowerCase();
   const normalizedPlan = planTitle.trim();
 
-  if (!normalizedPlan || normalizedPlan === normalizedTask) {
-    return normalizedTask;
+  if (!normalizedPlan || normalizedPlan.toLowerCase() === normalizedTask) {
+    return null;
   }
 
-  return `${normalizedTask}. Current plan focus: ${normalizedPlan}.`;
+  return normalizedPlan;
 }
 
-function buildSecondaryMicroTask(
-  optionalNextStep: string,
-  fallbackMinutes: number
+function normalizeStandaloneFollowUp(
+  text: string,
+  taskTitle: string,
+  planTitle: string
 ) {
-  const text = optionalNextStep.trim();
+  const trimmed = text.trim().replace(/\s+/g, " ");
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (trimmed.includes(`"${taskTitle}"`)) {
+    return trimmed;
+  }
+
+  const normalizedTask = taskTitle.trim();
+  const normalizedPlan = buildPlanFocus(taskTitle, planTitle);
+  const taskContext = normalizedPlan
+    ? `${normalizedTask} (plan focus: ${normalizedPlan})`
+    : normalizedTask;
+  const lower = trimmed.toLowerCase();
+
+  if (lower.startsWith("keep one usable line")) {
+    return `Keep one usable line for "${taskContext}" and rewrite it clearly.`;
+  }
+
+  if (lower.startsWith("keep only the one line")) {
+    return `Keep the most usable line for "${taskContext}" and rewrite it as a clear draft.`;
+  }
+
+  if (lower.startsWith("pick the easiest")) {
+    return `Pick the easiest next piece of "${taskContext}" and prepare it for two minutes.`;
+  }
+
+  if (lower.startsWith("mark one small section")) {
+    return `Mark one small section of "${taskContext}" that now feels approachable.`;
+  }
+
+  if (lower.startsWith("if energy improves")) {
+    return `If energy improves, spend two more minutes on the easiest visible slice of "${taskContext}".`;
+  }
+
+  if (/^(it|that|this)\b/i.test(trimmed)) {
+    return `For "${taskContext}", ${trimmed.charAt(0).toLowerCase()}${trimmed.slice(1)}`;
+  }
+
+  return trimmed;
+}
+
+async function buildSecondaryMicroTask(
+  optionalNextStep: string,
+  fallbackMinutes: number,
+  taskTitle: string,
+  planTitle: string,
+  resistanceType: Parameters<typeof reviewAgent>[0]["resistance_type"]
+) {
+  const text = normalizeStandaloneFollowUp(optionalNextStep, taskTitle, planTitle);
 
   if (!text) {
     return null;
   }
 
-  return {
+  const candidate = {
     action_text: text,
     estimated_minutes: Math.max(3, Math.min(fallbackMinutes + 2, 12))
+  };
+
+  const review = await reviewAgent({
+    task: taskTitle,
+    resistance_type: resistanceType,
+    micro_action: {
+      micro_action: candidate.action_text,
+      estimated_time: `${candidate.estimated_minutes} minutes`,
+      estimated_minutes: candidate.estimated_minutes,
+      why_this_step: "Generated as an optional follow-up step.",
+      optional_next_step: "",
+      confidence: 0.8
+    }
+  });
+
+  return review.approved ? candidate : null;
+}
+
+function createPrimaryMicroTaskRow(taskId: string, planId: string, action: {
+  micro_action: string;
+  estimated_minutes: number;
+}) {
+  return {
+    task_id: taskId,
+    plan_id: planId,
+    action_text: action.micro_action,
+    estimated_minutes: action.estimated_minutes,
+    status: "pending" as const
   };
 }
 
@@ -109,6 +195,23 @@ export async function createTask(formData: FormData) {
   const schedulePreferences = await getSchedulePreferences(user.id);
   const planningPreferences = getPlanningPreferences(schedulePreferences);
   const workStyle = (profile.work_style as WorkStyle | null | undefined) ?? null;
+  const headerStore = await headers();
+  const { generationEstimatedSpendCents } = getAiLimitEnv();
+  try {
+    await reserveAiUsage(supabase as never, {
+      userId: user.id,
+      ipAddress: getIpAddressFromHeaders(headerStore),
+      routeKey: "task_create_generation",
+      requestCount: planTitles.length,
+      estimatedSpendCents: generationEstimatedSpendCents * planTitles.length
+    });
+  } catch (error) {
+    if (error instanceof AiUsageLimitError) {
+      redirect(`/task/new?error=${encodeURIComponent(error.message)}`);
+    }
+
+    redirect("/task/new?error=Unable%20to%20verify%20AI%20usage%20limits.");
+  }
 
   const taskInsert = writable.from("tasks").insert({
     user_id: user.id,
@@ -174,7 +277,8 @@ export async function createTask(formData: FormData) {
         plan,
         microActionPlan: await generateMicroActionPlan({
           userId: user.id,
-          task: buildPlanTaskPrompt(parsed.data.title, plan.title),
+          task: parsed.data.title,
+          planFocus: buildPlanFocus(parsed.data.title, plan.title),
           taskId: task.id,
           planId: plan.id,
           triggerSource: "task_creation",
@@ -187,35 +291,43 @@ export async function createTask(formData: FormData) {
       }))
   );
 
-  const microActionRows = generatedPlans.flatMap(({ plan, microActionPlan }) => {
-    const primary = {
+  const microActionRows: Array<{
+    task_id: string;
+    plan_id: string;
+    action_text: string;
+    estimated_minutes: number;
+    status: "pending";
+  }> = [];
+
+  for (const { plan, microActionPlan } of generatedPlans) {
+    microActionRows.push(
+      createPrimaryMicroTaskRow(task.id, plan.id, microActionPlan)
+    );
+
+    if (parsed.data.availableTime < 25) {
+      continue;
+    }
+
+    const secondary = await buildSecondaryMicroTask(
+      microActionPlan.optional_next_step,
+      microActionPlan.estimated_minutes,
+      parsed.data.title,
+      plan.title,
+      microActionPlan.resistance_type
+    );
+
+    if (!secondary) {
+      continue;
+    }
+
+    microActionRows.push({
       task_id: task.id,
       plan_id: plan.id,
-      action_text: microActionPlan.micro_action,
-      estimated_minutes: microActionPlan.estimated_minutes,
-      status: "pending" as const
-    };
-    const secondary =
-      parsed.data.availableTime >= 25
-        ? buildSecondaryMicroTask(
-            microActionPlan.optional_next_step,
-            microActionPlan.estimated_minutes
-          )
-        : null;
-
-    return secondary
-      ? [
-          primary,
-          {
-            task_id: task.id,
-            plan_id: plan.id,
-            action_text: secondary.action_text,
-            estimated_minutes: secondary.estimated_minutes,
-            status: "pending" as const
-          }
-        ]
-      : [primary];
-  });
+      action_text: secondary.action_text,
+      estimated_minutes: secondary.estimated_minutes,
+      status: "pending"
+    });
+  }
 
   const microActionInsert = writable.from("micro_actions").insert(
     microActionRows
@@ -250,7 +362,6 @@ export async function createTask(formData: FormData) {
   let scheduleWarning: string | null = null;
 
   if (schedulePreferences && activePlanMicroActions.length > 0) {
-    const headerStore = await headers();
     const cookieStore = await cookies();
     const forwardedHost =
       headerStore.get("x-forwarded-host") ?? headerStore.get("host");

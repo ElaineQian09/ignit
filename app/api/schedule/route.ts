@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { AiUsageLimitError, getIpAddressFromHeaders, reserveAiUsage } from "@/lib/ai-usage-guard";
+import { getAiLimitEnv } from "@/lib/env";
 import { insertMemoryLogs } from "@/lib/memory-logs";
 import { buildScheduleAttemptMemories } from "@/lib/scheduling-memory";
 import { createClient } from "@/lib/supabase/server";
@@ -69,6 +71,53 @@ export async function POST(request: Request) {
   const workStyle =
     (profile?.work_style as WorkStyle | null | undefined) ?? null;
 
+  const { data: taskData, error: taskError } = await supabase
+    .from("tasks")
+    .select("id")
+    .eq("id", parsed.data.task_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (taskError) {
+    return NextResponse.json(
+      { error: "Unable to verify task ownership." },
+      { status: 500 }
+    );
+  }
+
+  if (!taskData) {
+    return NextResponse.json(
+      { error: "Task not found for this user." },
+      { status: 403 }
+    );
+  }
+
+  const requestedMicroActionIds = parsed.data.micro_actions.map((action) => action.id);
+  const { data: microActionRows, error: microActionError } = await supabase
+    .from("micro_actions")
+    .select("id, task_id, tasks!inner(user_id)")
+    .in("id", requestedMicroActionIds)
+    .eq("task_id", parsed.data.task_id)
+    .eq("tasks.user_id", user.id);
+
+  if (microActionError) {
+    return NextResponse.json(
+      { error: "Unable to verify micro-action ownership." },
+      { status: 500 }
+    );
+  }
+
+  const ownedMicroActionIds = new Set(
+    ((microActionRows ?? []) as Array<{ id: string }>).map((row) => row.id)
+  );
+
+  if (ownedMicroActionIds.size !== requestedMicroActionIds.length) {
+    return NextResponse.json(
+      { error: "One or more micro-actions do not belong to this user task." },
+      { status: 403 }
+    );
+  }
+
   const scheduled = scheduleMicroActions({
     userPreferences: preferences,
     taskDeadline: parsed.data.deadline ?? null,
@@ -92,6 +141,25 @@ export async function POST(request: Request) {
       ) => Promise<{ error: { message: string } | null }>;
     };
   };
+
+  try {
+    const { embeddingEstimatedSpendCents } = getAiLimitEnv();
+    await reserveAiUsage(supabase as never, {
+      userId: user.id,
+      ipAddress: getIpAddressFromHeaders(request.headers),
+      routeKey: "api_schedule",
+      estimatedSpendCents: embeddingEstimatedSpendCents * behaviorMemories.length
+    });
+  } catch (error) {
+    if (error instanceof AiUsageLimitError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    return NextResponse.json(
+      { error: "Unable to verify AI usage limits." },
+      { status: 500 }
+    );
+  }
 
   if (scheduled.length === 0) {
     await insertMemoryLogs(

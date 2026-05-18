@@ -62,7 +62,6 @@ export function classifyResistanceType({
       "wrong",
       "embarrass",
       "resume",
-      "interview",
       "application"
     ])
   ) {

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { AiUsageLimitError, getIpAddressFromHeaders, reserveAiUsage } from "@/lib/ai-usage-guard";
+import { getAiLimitEnv } from "@/lib/env";
 import { generateMicroActionPlan } from "@/lib/orchestrator";
 import { createClient } from "@/lib/supabase/server";
 import { generateMicroActionRequestSchema } from "@/lib/validators";
@@ -61,6 +63,25 @@ export async function POST(request: Request) {
   const profile = (profileData ?? null) as Pick<Profile, "work_style"> | null;
   const workStyle =
     (profile?.work_style as WorkStyle | null | undefined) ?? null;
+
+  try {
+    const { generationEstimatedSpendCents } = getAiLimitEnv();
+    await reserveAiUsage(supabase as never, {
+      userId: user.id,
+      ipAddress: getIpAddressFromHeaders(request.headers),
+      routeKey: "api_generate_micro_action",
+      estimatedSpendCents: generationEstimatedSpendCents
+    });
+  } catch (error) {
+    if (error instanceof AiUsageLimitError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    return NextResponse.json(
+      { error: "Unable to verify AI usage limits." },
+      { status: 500 }
+    );
+  }
 
   const result = await generateMicroActionPlan({
     userId: user.id,

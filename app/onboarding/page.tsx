@@ -76,7 +76,7 @@ export default async function OnboardingPage({
                   name="bigGoals"
                   rows={5}
                   defaultValue={(goals ?? []).map((goal) => goal.title).join("\n")}
-                  placeholder={"Refresh resume\nFinish system design prep\nShip portfolio update"}
+                  placeholder={"Land a product design internship\nBuild a portfolio that gets replies\nBecome confident in technical interviews"}
                   className="field resize-none"
                   required
                 />

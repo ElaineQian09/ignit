@@ -1,9 +1,16 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
+import {
+  AiUsageLimitError,
+  getIpAddressFromHeaders,
+  reserveAiUsage
+} from "@/lib/ai-usage-guard";
 import { getSchedulePreferences } from "@/lib/auth";
+import { getAiLimitEnv } from "@/lib/env";
 import {
   buildBlockOutcomeMemories,
   buildScheduleAttemptMemories
@@ -175,6 +182,25 @@ async function insertBehaviorMemoryLogs(
   }>
 ) {
   if (entries.length === 0) {
+    return;
+  }
+
+  try {
+    const headerStore = await headers();
+    const { embeddingEstimatedSpendCents } = getAiLimitEnv();
+    await reserveAiUsage(writable as never, {
+      userId,
+      ipAddress: getIpAddressFromHeaders(headerStore),
+      routeKey: "dashboard_memory_logs",
+      requestCount: entries.length,
+      estimatedSpendCents: embeddingEstimatedSpendCents * entries.length
+    });
+  } catch (error) {
+    if (error instanceof AiUsageLimitError) {
+      return;
+    }
+
+    console.error("Unable to verify AI usage limits for memory logs:", error);
     return;
   }
 
@@ -722,6 +748,22 @@ export async function swapMicroTask(formData: FormData) {
 
   const preferences = await getSchedulePreferences(user.id);
   const workStyle = await getWorkStyleForUser(supabase, user.id);
+  const headerStore = await headers();
+  const { generationEstimatedSpendCents } = getAiLimitEnv();
+  try {
+    await reserveAiUsage(supabase as never, {
+      userId: user.id,
+      ipAddress: getIpAddressFromHeaders(headerStore),
+      routeKey: "dashboard_swap_micro_task",
+      estimatedSpendCents: generationEstimatedSpendCents
+    });
+  } catch (error) {
+    if (error instanceof AiUsageLimitError) {
+      dashboardRedirect(error.message, "error");
+    }
+
+    dashboardRedirect("Unable to verify AI usage limits.", "error");
+  }
 
   const regenerated = await generateMicroActionPlan({
     userId: user.id,

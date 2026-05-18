@@ -45,6 +45,7 @@ type WritableClient = Awaited<ReturnType<typeof createClient>>;
 export interface GenerateMicroActionInput {
   userId: string;
   task: string;
+  planFocus?: string | null;
   taskId?: string | null;
   planId?: string | null;
   triggerSource?: TriggerSource;
@@ -93,6 +94,7 @@ export interface GenerateMicroActionPlanDependencies {
 function buildSharedState(input: GenerateMicroActionInput) {
   return {
     task: input.task,
+    plan_focus: input.planFocus ?? null,
     task_id: input.taskId ?? null,
     plan_id: input.planId ?? null,
     trigger_source: input.triggerSource ?? "manual_replan",
@@ -218,9 +220,11 @@ export function createGenerateMicroActionPlan(
 
       let selectedMicroAction = await dependencies.microActionAgent({
         task: input.task,
+        plan_focus: input.planFocus ?? null,
         memories: memoryResult.memories,
         resistance_type: refinedResistance,
-        avoid_action: input.avoidMicroAction ?? null
+        avoid_action: input.avoidMicroAction ?? null,
+        work_style: input.workStyle ?? null
       });
       await recordStep(writable, agentRunId, {
         agentName: "microActionAgent",
