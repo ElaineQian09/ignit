@@ -1,27 +1,49 @@
-import { NextResponse } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
+import { NextResponse, type NextRequest } from "next/server";
 
 import { safeInternalPath } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   const url = new URL(request.url);
+  const tokenHash = url.searchParams.get("token_hash");
+  const type = url.searchParams.get("type") as EmailOtpType | null;
   const code = url.searchParams.get("code");
   const next = safeInternalPath(url.searchParams.get("next"));
+  const redirectTo = request.nextUrl.clone();
 
-  if (!code) {
-    return NextResponse.redirect(
-      new URL("/login?error=Missing%20verification%20code.", request.url)
-    );
+  redirectTo.pathname = "/login";
+  redirectTo.searchParams.delete("code");
+  redirectTo.searchParams.delete("token_hash");
+  redirectTo.searchParams.delete("type");
+
+  if (!tokenHash && !code) {
+    redirectTo.searchParams.set("error", "Missing verification code.");
+    return NextResponse.redirect(redirectTo);
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  const { error } =
+    tokenHash && type
+      ? await supabase.auth.verifyOtp({
+          token_hash: tokenHash,
+          type
+        })
+      : await supabase.auth.exchangeCodeForSession(code!);
 
   if (error) {
-    return NextResponse.redirect(
-      new URL("/login?error=Magic%20link%20verification%20failed.", request.url)
+    console.error("Magic link verification failed:", {
+      message: error.message,
+      hasTokenHash: Boolean(tokenHash),
+      hasCode: Boolean(code),
+      type
+    });
+    redirectTo.searchParams.set(
+      "error",
+      `Magic link verification failed: ${error.message}`
     );
+    return NextResponse.redirect(redirectTo);
   }
 
   const {
@@ -29,7 +51,7 @@ export async function GET(request: Request) {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(redirectTo);
   }
 
   const { data: profile } = await supabase
